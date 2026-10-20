@@ -731,3 +731,126 @@ final class AvatarView: NSImageView {
         }.resume()
     }
 }
+
+// MARK: - Settings
+
+/// A few options side by side; the chosen one is solid white (like the primary buttons).
+final class SegmentedPicker: NSControl {
+    let options: [String]
+    var selected = 0 { didSet { needsDisplay = true } }
+    private var hovered: Int?
+    private var area: NSTrackingArea?
+    private static let font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+    private static let pad: CGFloat = 12
+
+    init(_ options: [String], selected: Int, target: AnyObject, action: Selector) {
+        self.options = options
+        self.selected = selected
+        super.init(frame: .zero)
+        self.target = target
+        self.action = action
+        translatesAutoresizingMaskIntoConstraints = false
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    private var widths: [CGFloat] {
+        options.map { ceil(($0 as NSString).size(withAttributes: [.font: SegmentedPicker.font]).width) + 2 * SegmentedPicker.pad }
+    }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: widths.reduce(0, +) + 4, height: 28) }
+
+    private func rects() -> [NSRect] {
+        var x: CGFloat = 2
+        return widths.map { w in defer { x += w }; return NSRect(x: x, y: 2, width: w, height: bounds.height - 4) }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.white.withAlphaComponent(0.06).setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: bounds.height / 2, yRadius: bounds.height / 2).fill()
+        for (i, r) in rects().enumerated() {
+            let on = i == selected
+            if on || hovered == i {
+                (on ? NSColor(white: 0.95, alpha: 1) : NSColor.white.withAlphaComponent(0.06)).setFill()
+                NSBezierPath(roundedRect: r, xRadius: r.height / 2, yRadius: r.height / 2).fill()
+            }
+            let text = NSAttributedString(string: options[i], attributes: [
+                .font: SegmentedPicker.font,
+                .foregroundColor: on ? Style.ink : NSColor.white.withAlphaComponent(0.6),
+            ])
+            let s = text.size()
+            text.draw(at: NSPoint(x: round(r.midX - s.width / 2), y: round(r.midY - s.height / 2)))
+        }
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let area { removeTrackingArea(area) }
+        let a = NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+        addTrackingArea(a)
+        area = a
+    }
+
+    private func index(at event: NSEvent) -> Int? {
+        let p = convert(event.locationInWindow, from: nil)
+        return rects().firstIndex { $0.contains(p) }
+    }
+
+    override func mouseMoved(with event: NSEvent) { hovered = index(at: event); needsDisplay = true }
+    override func mouseExited(with event: NSEvent) { hovered = nil; needsDisplay = true }
+    override func mouseDown(with event: NSEvent) {}
+    override func mouseUp(with event: NSEvent) {
+        guard let i = index(at: event), i != selected else { return }
+        selected = i
+        sendAction(action, to: target)
+    }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+}
+
+/// One card holding a section's rows, with hairlines between them (no hover: it's not clickable).
+final class SettingsGroup: NSView {
+    private let stack = NSStackView()
+
+    init(rows: [NSView]) {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 14
+        layer?.backgroundColor = Style.cardFill.cgColor
+        layer?.borderWidth = 1
+        layer?.borderColor = Style.cardBorder.cgColor
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 0
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.topAnchor.constraint(equalTo: topAnchor),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+        for (i, row) in rows.enumerated() {
+            if i > 0 {
+                let line = NSView()
+                line.wantsLayer = true
+                line.layer?.backgroundColor = Style.divider.cgColor
+                let holder = NSView()
+                line.translatesAutoresizingMaskIntoConstraints = false
+                holder.addSubview(line)
+                NSLayoutConstraint.activate([
+                    holder.heightAnchor.constraint(equalToConstant: 1),
+                    line.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 16),
+                    line.trailingAnchor.constraint(equalTo: holder.trailingAnchor),
+                    line.topAnchor.constraint(equalTo: holder.topAnchor),
+                    line.bottomAnchor.constraint(equalTo: holder.bottomAnchor),
+                ])
+                stack.addArrangedSubview(holder)
+                holder.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            }
+            stack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+}

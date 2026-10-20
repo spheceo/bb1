@@ -567,7 +567,7 @@ final class SettingsPage: NSView {
         super.init(frame: .zero)
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 10
+        stack.spacing = 0
         stack.translatesAutoresizingMaskIntoConstraints = false
         let scroll = NSScrollView()
         scroll.drawsBackground = false
@@ -607,7 +607,7 @@ final class SettingsPage: NSView {
         logText.isEditable = false
         logText.drawsBackground = false
         logText.font = .monospacedSystemFont(ofSize: 10.5, weight: .regular)
-        logText.textColor = .secondaryLabelColor
+        logText.textColor = NSColor.white.withAlphaComponent(0.45)
         NotificationCenter.default.addObserver(self, selector: #selector(updatesChanged), name: Updater.changed, object: nil)
     }
 
@@ -651,131 +651,173 @@ final class SettingsPage: NSView {
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         switchActions.removeAll()
         let s = app.settings
-        add(NSTextField(labelWithAttributedString: NSAttributedString(string: "Settings", attributes: [
-            .font: NSFont.systemFont(ofSize: 30, weight: .bold), .kern: -0.6, .foregroundColor: NSColor.white])))
+        let title = NSTextField(labelWithAttributedString: NSAttributedString(string: "Settings", attributes: [
+            .font: NSFont.systemFont(ofSize: 30, weight: .bold), .kern: -0.6, .foregroundColor: NSColor.white]))
+        add(title)
+        stack.setCustomSpacing(30, after: title)
 
-        section("This Mac")
-        addSwitch("Share this Mac", "Let your other Macs view and control this one.", app.isHosting) { app.setHosting($0) }
-        addSwitch("Sign in with Tailscale", "Macs on your Tailscale account connect without pairing.", s.allowTailscale) { on in
-            app.updateSettings { $0.allowTailscale = on }
+        // Sharing
+        var sharing = [row("Share this Mac", app.isHosting ? (app.startsAtLogin ? "On, and starts at login" : "On") : "Off",
+                           toggle(app.isHosting) { app.setHosting($0) })]
+        if app.isHosting {
+            if !HostController.hasScreenRecording {
+                sharing.append(row("Screen Recording", "Needed so your other Macs can see this screen",
+                                   small("Allow…", .primary, #selector(openScreen))))
+            }
+            if !HostController.hasAccessibility {
+                sharing.append(row("Accessibility", "Needed so your other Macs can control this one",
+                                   small("Allow…", .primary, #selector(openAccessibility))))
+            }
+            let addresses = HostRole.addresses().map { "\($0.1)\($0.0.hasPrefix("utun") ? " Tailscale" : "")" }.joined(separator: "   ")
+            if !addresses.isEmpty { sharing.append(row("Addresses", addresses, mono: true, nil)) }
         }
-        addSwitch("Pair with a code", "A new Mac pairs once by typing a 6-digit code shown on this screen.", s.allowPairing) { on in
-            app.updateSettings { $0.allowPairing = on }
-        }
+        section("Sharing", "Let your other Macs see and control this one.", sharing)
+
+        // Who can connect
         let devices = PairedDevice.store.load()
-        let names = devices.isEmpty ? "None yet" : devices.map(\.name).sorted().joined(separator: ", ")
-        addRow("Paired Macs", names, devices.isEmpty ? nil : PillButton("Forget All…", kind: .secondary, target: self, action: #selector(forget)))
-        if app.isHosting {
-            addRow("Screen Recording", HostController.hasScreenRecording ? "Allowed" : "Needed so your other Macs can see this screen",
-                   HostController.hasScreenRecording ? nil : PillButton("Open Settings", kind: .primary, target: self, action: #selector(openScreen)))
-            addRow("Accessibility", HostController.hasAccessibility ? "Allowed" : "Needed so your other Macs can control this one",
-                   HostController.hasAccessibility ? nil : PillButton("Open Settings", kind: .primary, target: self, action: #selector(openAccessibility)))
-            let addresses = HostRole.addresses().map { "\($0.1)\($0.0.hasPrefix("utun") ? " (Tailscale)" : "")" }.joined(separator: "    ")
-            addRow("Addresses", addresses, nil)
-        }
+        section("Who can connect", "Macs you've paired, or on your Tailscale account, get in without asking.", [
+            row("Tailscale sign-in", "Macs on your Tailscale account", toggle(s.allowTailscale) { on in
+                app.updateSettings { $0.allowTailscale = on }
+            }),
+            row("Pairing code", "A new Mac types a 6-digit code shown here", toggle(s.allowPairing) { on in
+                app.updateSettings { $0.allowPairing = on }
+            }),
+            row("Paired Macs", devices.isEmpty ? "None yet" : devices.map(\.name).sorted().joined(separator: ", "),
+                devices.isEmpty ? nil : small("Forget all…", .secondary, #selector(forget))),
+        ])
 
-        section("App")
-        let dock = NSPopUpButton(frame: .zero, pullsDown: false)
-        dock.addItems(withTitles: DockIcon.allCases.map(\.title))
-        dock.selectItem(at: DockIcon.allCases.firstIndex(of: s.dockIcon) ?? 1)
-        dock.target = self
-        dock.action = #selector(dockChanged(_:))
-        addRow("Dock icon", "When bb1 shows in the Dock.", dock)
-        addSwitch("Keep running in the menu bar", "Closing windows leaves bb1 running until you choose Quit.", s.keepRunning) { on in
-            app.updateSettings { $0.keepRunning = on }
-        }
-        addSwitch("Open at login", "Start bb1 when you log in, so this Mac can be reached after a restart.", app.startsAtLogin) {
-            app.setStartsAtLogin($0)
-        }
+        // App
+        let dock = SegmentedPicker(["Always", "While open", "Never"],
+                                   selected: DockIcon.allCases.firstIndex(of: s.dockIcon) ?? 1,
+                                   target: self, action: #selector(dockChanged(_:)))
+        section("App", "How bb1 sits on this Mac.", [
+            row("Open at login", nil, toggle(app.startsAtLogin) { app.setStartsAtLogin($0) }),
+            row("Keep running in the menu bar", "Closing the window doesn't quit", toggle(s.keepRunning) { on in
+                app.updateSettings { $0.keepRunning = on }
+            }),
+            row("Dock icon", nil, dock),
+        ])
 
-        if Installer.isInstalledApp {
-            addRow("Remove bb1", "Quit, stop starting at login and move the app to the Trash. Pairings are kept.",
-                   PillButton("Remove…", kind: .secondary, target: self, action: #selector(removeApp)))
-        }
-
-        section("Updates")
+        // Updates
         let updater = Updater.shared
-        var detail = "Version \(BB1.version) · build \(BB1.build)"
-        var control: NSView? = PillButton("Check for Updates", kind: .secondary, target: self, action: #selector(checkForUpdates))
+        var status = "Up to date"
+        var control: NSView? = small("Check now", .secondary, #selector(checkForUpdates))
         switch updater.state {
-        case .idle: break
-        case .checking: detail += " · Checking…"; control = nil
-        case .upToDate: detail += " · Up to date"
-        case .available(let r):
-            detail += " · \(r.title) is available"
-            control = PillButton("Update", kind: .primary, target: self, action: #selector(updateNow))
-        case .downloading(_, let p): detail += " · Downloading update · \(Int(p * 100))%"; control = nil
-        case .installing, .restarting: detail += " · Installing update…"; control = nil
-        case .failed(let message): detail += " · \(message)"
+        case .idle: status = "Checks every few minutes"
+        case .checking: status = "Checking…"; control = nil
+        case .upToDate: status = "Up to date"
+        case .available(let r): status = "\(r.title) is ready"; control = small("Update", .primary, #selector(updateNow))
+        case .downloading(_, let p): status = "Downloading · \(Int(p * 100))%"; control = nil
+        case .installing, .restarting: status = "Installing…"; control = nil
+        case .failed(let message): status = message
         }
-        if !updater.canUpdate { detail = "Version \(BB1.version) · development copy (updates work in the installed app)"; control = nil }
-        addRow("bb1", detail, control)
-        addSwitch("Include test builds", "Offer every test build as an update, not only releases.", s.testBuilds) { on in
-            app.updateSettings { $0.testBuilds = on }
-            Updater.shared.check()
-        }
+        if !updater.canUpdate { status = "Development copy, doesn't update itself"; control = nil }
+        section("Updates", "New builds arrive inside the app.", [
+            row("bb1 \(BB1.version) · build \(BB1.build)", status, control),
+            row("Include test builds", "Every test build, not just releases", toggle(s.testBuilds) { on in
+                app.updateSettings { $0.testBuilds = on }
+                Updater.shared.check()
+            }),
+        ])
 
-        section("Diagnostics")
-        addRow("Logs", "Everything both Macs report ends up in the sharing Mac's log.",
-               PillButton("Open Logs Folder", kind: .secondary, target: self, action: #selector(openLogs)))
+        // Help
+        var help = [row("Logs", "Both Macs report to the sharing Mac's log", small("Open folder", .secondary, #selector(openLogs)))]
         if app.isHosting {
-            logText.string = HostPanel.tail(Log.fileURL, lines: 14).joined(separator: "\n")
-            let box = CardView()
+            logText.string = HostPanel.tail(Log.fileURL, lines: 12).joined(separator: "\n")
+            let box = NSView()
             logText.translatesAutoresizingMaskIntoConstraints = false
             box.addSubview(logText)
             NSLayoutConstraint.activate([
-                logText.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 12),
-                logText.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -12),
-                logText.topAnchor.constraint(equalTo: box.topAnchor, constant: 10),
-                logText.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -10),
-                box.heightAnchor.constraint(equalToConstant: 200),
+                logText.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 16),
+                logText.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -16),
+                logText.topAnchor.constraint(equalTo: box.topAnchor, constant: 12),
+                logText.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -12),
+                box.heightAnchor.constraint(equalToConstant: 170),
             ])
-            add(box)
-            box.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            help.append(box)
         }
+        if Installer.isInstalledApp {
+            help.append(row("Remove bb1", "Quits and moves it to the Trash. Pairings are kept.", small("Remove…", .secondary, #selector(removeApp))))
+        }
+        section("Help", "For when something isn't right.", help)
     }
 
-    // MARK: Rows
+    // MARK: Building blocks
 
     private func add(_ v: NSView) { stack.addArrangedSubview(v) }
 
-    private func section(_ title: String) {
-        let spacer = NSView()
-        spacer.heightAnchor.constraint(equalToConstant: 10).isActive = true
-        add(spacer)
-        add(Style.label(title.uppercased(), size: 11, weight: .semibold, color: .tertiaryLabelColor))
+    /// A section: its name and a line about it on the left, its settings in one card on the right.
+    private func section(_ title: String, _ blurb: String, _ rows: [NSView]) {
+        let name = Style.label(title, size: 14, weight: .semibold, color: .white)
+        let about = Style.wrapping(blurb, size: 12, color: NSColor.white.withAlphaComponent(0.45))
+        about.preferredMaxLayoutWidth = 190
+        let left = NSStackView(views: [name, about])
+        left.orientation = .vertical
+        left.alignment = .leading
+        left.spacing = 4
+        left.edgeInsets = NSEdgeInsets(top: 9, left: 0, bottom: 0, right: 0)
+        left.translatesAutoresizingMaskIntoConstraints = false
+        left.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        let group = SettingsGroup(rows: rows)
+        group.setContentHuggingPriority(.init(1), for: .horizontal)
+        let line = NSStackView(views: [left, group])
+        line.orientation = .horizontal
+        line.alignment = .top
+        line.spacing = 32
+        line.distribution = .fill
+        add(line)
+        line.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        stack.setCustomSpacing(36, after: line)
     }
 
-    private func addRow(_ title: String, _ detail: String, _ control: NSView?) {
-        let t = Style.label(title, size: 13.5, weight: .medium)
-        let d = Style.label(detail, size: 12, color: .secondaryLabelColor)
-        let text = NSStackView(views: [t, d])
+    /// A row in a card: a title, an optional quieter line under it, and a control on the right.
+    private func row(_ title: String, _ detail: String?, mono: Bool = false, _ control: NSView?) -> NSView {
+        let t = Style.label(title, size: 13.5, weight: .medium, color: .white)
+        var texts: [NSView] = [t]
+        if let detail {
+            let d = Style.label(detail, size: 12, color: NSColor.white.withAlphaComponent(0.45))
+            if mono { d.font = .monospacedSystemFont(ofSize: 11.5, weight: .regular) }
+            d.toolTip = detail
+            d.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            texts.append(d)
+        }
+        t.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let text = NSStackView(views: texts)
         text.orientation = .vertical
         text.alignment = .leading
         text.spacing = 2
-        var views: [NSView] = [text, NSView()]
-        if let control { views.append(control) }
-        let row = NSStackView(views: views)
-        row.distribution = .fill
-        row.edgeInsets = NSEdgeInsets(top: 12, left: 16, bottom: 12, right: 16)
-        let card = CardView()
-        row.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(row)
-        NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: card.leadingAnchor), row.trailingAnchor.constraint(equalTo: card.trailingAnchor),
-            row.topAnchor.constraint(equalTo: card.topAnchor), row.bottomAnchor.constraint(equalTo: card.bottomAnchor),
-        ])
-        add(card)
-        card.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        var views: [NSView] = [text]
+        if let control {
+            control.setContentCompressionResistancePriority(.required, for: .horizontal)
+            views.append(control)
+        }
+        let r = NSStackView(views: views)
+        r.orientation = .horizontal
+        r.alignment = .centerY
+        r.distribution = .fill
+        r.spacing = 16
+        r.edgeInsets = NSEdgeInsets(top: 13, left: 16, bottom: 13, right: 16)
+        text.setContentHuggingPriority(.init(1), for: .horizontal)
+        r.heightAnchor.constraint(greaterThanOrEqualToConstant: 52).isActive = true
+        return r
     }
 
-    private func addSwitch(_ title: String, _ detail: String, _ on: Bool, _ changed: @escaping (Bool) -> Void) {
+    private func toggle(_ on: Bool, _ changed: @escaping (Bool) -> Void) -> ToggleSwitch {
         let sw = ToggleSwitch()
         sw.isOn = on
         sw.target = self
         sw.action = #selector(switchChanged(_:))
+        sw.translatesAutoresizingMaskIntoConstraints = false
+        sw.widthAnchor.constraint(equalToConstant: 36).isActive = true
+        sw.heightAnchor.constraint(equalToConstant: 20).isActive = true
         switchActions[ObjectIdentifier(sw)] = changed
-        addRow(title, detail, sw)
+        return sw
+    }
+
+    private func small(_ title: String, _ kind: PillButton.Kind, _ action: Selector) -> PillButton {
+        let b = PillButton(title, kind: kind, target: self, action: action)
+        b.small = true
+        return b
     }
 
     @objc private func switchChanged(_ sender: ToggleSwitch) {
@@ -783,8 +825,8 @@ final class SettingsPage: NSView {
         DispatchQueue.main.async { self.reload() }
     }
 
-    @objc private func dockChanged(_ sender: NSPopUpButton) {
-        let option = DockIcon.allCases[sender.indexOfSelectedItem]
+    @objc private func dockChanged(_ sender: SegmentedPicker) {
+        let option = DockIcon.allCases[sender.selected]
         dashboard?.delegate?.updateSettings { $0.dockIcon = option }
         dashboard?.delegate?.refreshDock()
     }
