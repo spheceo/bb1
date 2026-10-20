@@ -8,7 +8,8 @@ appname = os.path.basename(app)
 format = "UDZO"
 filesystem = "HFS+"
 files = [app]
-symlinks = {"Applications": "/Applications"}
+# Named " ": Finder writes names in near-black over the picture, so the background draws "Applications" in white.
+symlinks = {" ": "/Applications"}
 icon = defines["icon"]
 hide_extensions = [appname]
 
@@ -26,6 +27,6 @@ arrange_by = None
 icon_size = 112
 text_size = 13
 icon_locations = {
-    appname: (170, 236),
-    "Applications": (470, 236),
+    appname: (160, 196),
+    " ": (480, 196),
 }

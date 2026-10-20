@@ -1,12 +1,22 @@
-// Draws the DMG window background (flat graphite like the app, the bb1 mark, an arrow between the
-// two icons) at 1x and 2x. Run: swift scripts/make-dmg-background.swift <out-dir>
-// The window's content is 640×400 pt; dmg-settings.py puts bb1.app at (170, 236) and Applications at (470, 236).
+// Draws the DMG window background at 1x and 2x. Run: swift scripts/make-dmg-background.swift <out-dir>
+//
+// The window is the bb1 mark: left half light, right half graphite. bb1.app sits on the light half,
+// Applications on the dark half, and an arc carries you across the split (dark on light, white on dark).
+// Finder writes icon names in near-black over a background picture, so the Applications shortcut is
+// named " " (no visible name) and its name is drawn here in white instead.
+// Content is 640×400 pt; dmg-settings.py puts bb1.app at (160, 196) and Applications at (480, 196).
 import AppKit
 
 let out = URL(fileURLWithPath: CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : ".")
-let size = NSSize(width: 640, height: 400)
+let W: CGFloat = 640, H: CGFloat = 400
 
 func graphite(_ v: CGFloat) -> NSColor { NSColor(srgbRed: v, green: v * 1.03, blue: v * 1.12, alpha: 1) }
+let light = NSColor(srgbRed: 0.95, green: 0.95, blue: 0.955, alpha: 1)
+let dark = graphite(0.035)
+let ink = graphite(0.08)
+
+/// Points from the top-left (like Finder's icon positions) → AppKit's bottom-left.
+func p(_ x: CGFloat, _ y: CGFloat) -> NSPoint { NSPoint(x: x, y: H - y) }
 
 /// The "Half" mark: rounded screen outline, left half solid.
 func drawMark(in rect: NSRect, color: NSColor) {
@@ -24,70 +34,60 @@ func drawMark(in rect: NSRect, color: NSColor) {
     NSGraphicsContext.restoreGraphicsState()
 }
 
-func text(_ s: String, size: CGFloat, weight: NSFont.Weight, color: NSColor, centerX: CGFloat, top: CGFloat) {
-    let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: size, weight: weight), .foregroundColor: color]
-    let str = NSAttributedString(string: s, attributes: attrs)
+/// Text centred on x (or left-aligned at x), top edge at y from the top.
+func text(_ s: String, size: CGFloat, weight: NSFont.Weight, color: NSColor, x: CGFloat, top: CGFloat, centered: Bool = true) {
+    let str = NSAttributedString(string: s, attributes: [.font: NSFont.systemFont(ofSize: size, weight: weight), .foregroundColor: color])
     let w = str.size()
-    str.draw(at: NSPoint(x: centerX - w.width / 2, y: 400 - top - w.height))
+    str.draw(at: NSPoint(x: centered ? x - w.width / 2 : x, y: H - top - w.height))
 }
 
 func render(scale: CGFloat) -> Data {
-    let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * scale), pixelsHigh: Int(size.height * scale),
+    let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(W * scale), pixelsHigh: Int(H * scale),
                                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
                                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
-    rep.size = size
+    rep.size = NSSize(width: W, height: H)
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    let leftHalf = NSRect(x: 0, y: 0, width: W / 2, height: H)
+    let rightHalf = NSRect(x: W / 2, y: 0, width: W / 2, height: H)
+    light.setFill(); leftHalf.fill()
+    dark.setFill(); rightHalf.fill()
 
-    graphite(0.035).setFill()
-    NSRect(origin: .zero, size: size).fill()
+    // Wordmark, top left.
+    drawMark(in: NSRect(x: 28, y: H - 28 - 16, width: 20, height: 16), color: ink)
+    text("bb1", size: 15, weight: .bold, color: ink, x: 56, top: 26, centered: false)
 
-    // Positions are in points from the top (like dmg-settings.py); AppKit's y runs up, hence 400 - y.
-    // Header: the mark and a short instruction.
-    drawMark(in: NSRect(x: 320 - 15, y: 400 - 40 - 24, width: 30, height: 24), color: .white)
-    text("Install bb1", size: 20, weight: .bold, color: .white, centerX: 320, top: 76)
-    text("Drag bb1 into your Applications folder.", size: 13, weight: .regular,
-         color: NSColor.white.withAlphaComponent(0.55), centerX: 320, top: 106)
-
-    for x in [170.0, 470.0] {
-        // A tile behind each icon…
-        let tile = NSRect(x: x - 86, y: 400 - 344, width: 172, height: 194)
-        graphite(0.075).setFill()
-        NSBezierPath(roundedRect: tile, xRadius: 24, yRadius: 24).fill()
-        NSColor.white.withAlphaComponent(0.06).setStroke()
-        let edge = NSBezierPath(roundedRect: tile.insetBy(dx: 0.5, dy: 0.5), xRadius: 24, yRadius: 24)
-        edge.lineWidth = 1
-        edge.stroke()
-        // …and a light tag where Finder writes the name (Finder draws it in dark text).
-        let tag = NSRect(x: x - 58, y: 400 - 324, width: 116, height: 22)
-        NSColor(white: 0.9, alpha: 1).setFill()
-        NSBezierPath(roundedRect: tag, xRadius: 11, yRadius: 11).fill()
+    // The arc from bb1 to Applications, half ink and half white like the mark.
+    let arc = NSBezierPath()
+    arc.move(to: p(222, 168))
+    arc.curve(to: p(412, 168), controlPoint1: p(270, 96), controlPoint2: p(364, 96))
+    let tip = p(412, 168)
+    arc.move(to: NSPoint(x: tip.x - 13, y: tip.y + 5))
+    arc.line(to: tip)
+    arc.line(to: NSPoint(x: tip.x - 3, y: tip.y + 13))
+    arc.lineWidth = 2.5
+    arc.lineCapStyle = .round
+    arc.lineJoinStyle = .round
+    for (half, color) in [(leftHalf, ink.withAlphaComponent(0.55)), (rightHalf, NSColor.white.withAlphaComponent(0.7))] {
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(rect: half).addClip()
+        color.setStroke()
+        arc.stroke()
+        NSGraphicsContext.restoreGraphicsState()
     }
 
-    // The Applications folder's own icon under the Applications shortcut: Finder on macOS 26 often
-    // leaves a shortcut's icon blank in disk image windows, and this keeps the target visible either way.
+    // The Applications folder icon and its name (Finder may leave the shortcut's own icon blank on macOS 26).
     let folder = NSWorkspace.shared.icon(forFile: "/Applications")
     folder.size = NSSize(width: 112, height: 112)
-    folder.draw(in: NSRect(x: 470 - 56, y: 400 - 236 - 56, width: 112, height: 112))
+    folder.draw(in: NSRect(x: 480 - 56, y: H - 196 - 56, width: 112, height: 112))
+    text("Applications", size: 13, weight: .regular, color: .white, x: 480, top: 262)
 
-    // Arrow between them, level with the icons.
-    let y = 400 - 236.0
-    let arrow = NSBezierPath()
-    arrow.move(to: NSPoint(x: 282, y: y))
-    arrow.line(to: NSPoint(x: 356, y: y))
-    arrow.move(to: NSPoint(x: 344, y: y + 10))
-    arrow.line(to: NSPoint(x: 358, y: y))
-    arrow.line(to: NSPoint(x: 344, y: y - 10))
-    arrow.lineWidth = 2.5
-    arrow.lineCapStyle = .round
-    arrow.lineJoinStyle = .round
-    NSColor.white.withAlphaComponent(0.4).setStroke()
-    arrow.stroke()
-
-    text("Then open bb1 from Applications. If macOS won't open it the first time:", size: 11.5, weight: .regular,
-         color: NSColor.white.withAlphaComponent(0.4), centerX: 320, top: 358)
-    text("System Settings → Privacy & Security → Open Anyway.", size: 11.5, weight: .medium,
-         color: NSColor.white.withAlphaComponent(0.6), centerX: 320, top: 375)
+    // Instructions along the bottom, one line per half.
+    text("Drag bb1 into Applications", size: 12, weight: .medium, color: ink.withAlphaComponent(0.55), x: 160, top: 346)
+    text("Blocked the first time? Open System Settings", size: 11, weight: .regular,
+         color: NSColor.white.withAlphaComponent(0.45), x: 480, top: 338)
+    text("→ Privacy & Security → Open Anyway", size: 11, weight: .regular,
+         color: NSColor.white.withAlphaComponent(0.45), x: 480, top: 354)
 
     NSGraphicsContext.restoreGraphicsState()
     return rep.representation(using: .png, properties: [:])!
