@@ -27,4 +27,4 @@ Everything so far. This version stays frozen until the first release.
 - Fixed: two cursors on first connect when using this Mac's cursor. The setting could arrive while capture was starting, and got lost.
 - The host's capture-freeze check needs 3+ clicks or keys with no new frame for 4 s, so a single quiet click can't trigger it.
 - The app version is shown in Settings → About and logged at startup.
-- **New look, matched to the icon:** flat, solid greys (no gradients or shadows), white buttons and switches instead of system blue, and each Mac drawn with the bb1 mark on its screen (white when online, dim when offline or not shared).
+- **New look, matched to the icon:** flat, near-black greys (no gradients or shadows), white buttons and switches instead of system blue, and each Mac drawn with the bb1 mark on its screen (white when online, dim when offline or not shared).

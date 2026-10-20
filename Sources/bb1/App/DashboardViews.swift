@@ -3,9 +3,9 @@ import AppKit
 /// Building blocks for the dashboard: flat, solid greys and white, like the app icon. No gradients or shadows.
 enum Style {
     static func graphite(_ v: CGFloat) -> NSColor { NSColor(srgbRed: v, green: v * 1.03, blue: v * 1.12, alpha: 1) }
-    static let background = graphite(0.085)
-    static let cardFill = graphite(0.125)
-    static let cardHover = graphite(0.15)
+    static let background = graphite(0.035)
+    static let cardFill = graphite(0.07)
+    static let cardHover = graphite(0.09)
     static let cardBorder = NSColor.white.withAlphaComponent(0.06)
     static let divider = NSColor.white.withAlphaComponent(0.06)
     static let ink = graphite(0.07)
