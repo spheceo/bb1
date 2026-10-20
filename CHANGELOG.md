@@ -1,11 +1,16 @@
 # Changelog
 
-Version numbers only change the last digit, and only when the owner says to make a release.
-Between releases, test builds are `dist/bb1-<version>-build<N>.zip`.
+Version numbers only change the last digit, and only when the owner says to make a proper release.
+Everything in between is a test build: a GitHub pre-release `build-<N>` (`bb1-<version>-build<N>.zip`),
+offered in the app when "Include test builds" is on.
 
-## v0.0.1 — not released yet (first release)
+## Test builds since v0.0.0
 
-Everything so far. This version stays frozen until the first release.
+Nothing yet.
+
+## v0.0.0 — 2026-10-20 (first release)
+
+Everything so far.
 
 - **One app for both roles.** Share this Mac and/or connect to your other Macs. Parsec-style dashboard (Your Macs, Settings), menu bar icon, Dock icon options, keeps running in the menu bar.
 - **Streaming:** native-resolution screen capture (ScreenCaptureKit), hardware HEVC in low-latency mode, 60 fps, UDP with packet resend on loss, ~10–15 ms capture-to-screen on a home network.

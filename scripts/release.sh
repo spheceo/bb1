@@ -10,8 +10,9 @@
 # The app finds updates by the zip's name on github.com/spheceo/bb1 releases, so keep the
 # "bb1-…-build<N>.zip" pattern. Publishing pushes the current branch first (a release needs its commit on GitHub).
 #
-# Versioning: VERSION stays frozen (now 0.0.1) until the owner says "make the first release".
-# Only the last number ever changes (0.0.1 → 0.0.2 → …), and only for a release the owner asks for.
+# Versioning: v0.0.0 was the first release. Everything after it is a test build (--publish) until the
+# owner says to make a proper release; then bump the last number in VERSION (0.0.0 → 0.0.1 → …),
+# add a "## v<VERSION>" section to CHANGELOG.md, and run --release.
 set -euo pipefail
 root=${0:A:h:h}
 cd "$root"
