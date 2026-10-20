@@ -35,6 +35,17 @@ public struct HostHello: Codable {
     public var appBuild: Int?
 }
 
+/// Host → client: a small picture of the host's main screen, for the dashboard.
+public struct PreviewMsg: Codable {
+    /// nil when there's no picture (for example, no Screen Recording permission yet).
+    public var jpeg: Data?
+    /// Time the host spent capturing, so the client can work out the network round trip.
+    public var captureMs: Double
+    public init(jpeg: Data?, captureMs: Double) {
+        self.jpeg = jpeg; self.captureMs = captureMs
+    }
+}
+
 /// Host → client while the host updates itself.
 public struct UpdateStatusMsg: Codable {
     /// "downloading", "installing", "restarting" or "failed"
@@ -215,4 +226,9 @@ public enum ControlMessage: Codable {
     /// Client → host: download this build from GitHub, install it and restart.
     case updateHost(build: Int)
     case updateStatus(UpdateStatusMsg)
+
+    // Screen previews (build 15+), on "update" connections
+    /// Client → host: send a picture of your screen, at most this many pixels wide.
+    case requestPreview(maxWidth: Int)
+    case preview(PreviewMsg)
 }

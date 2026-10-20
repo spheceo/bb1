@@ -205,7 +205,8 @@ final class HostController {
     var onPairingFinished: ((Bool) -> Void)?
     private var pairing: (channel: ControlChannel, code: String, deviceName: String)?
     private var ownTailscaleLogin: (login: String?, atUs: UInt64) = (nil, 0)
-    let hostName = Host.current().localizedName ?? "Mac"
+    /// `BB1_HOST_NAME` (tests only) lets a second test host on this Mac show up under another name.
+    let hostName = ProcessInfo.processInfo.environment["BB1_HOST_NAME"] ?? Host.current().localizedName ?? "Mac"
     let queue = DispatchQueue(label: "bb1.host", qos: .userInteractive)
     let pipeline: StreamPipeline
     private let injector = InputInjector()
@@ -608,11 +609,31 @@ final class HostController {
     private func startUpdateSession(_ channel: ControlChannel) {
         updateChannels.append(channel)
         channel.onMessage = { [weak self, weak channel] message in
-            guard let self, let channel, case .updateHost(let build) = message else { return }
-            self.updateRequested(build, by: channel)
+            guard let self, let channel else { return }
+            switch message {
+            case .updateHost(let build): self.updateRequested(build, by: channel)
+            case .requestPreview(let maxWidth): self.sendPreview(maxWidth: maxWidth, to: channel)
+            default: break
+            }
         }
         // Don't keep idle ones around.
         queue.asyncAfter(deadline: .now() + 600) { [weak channel] in channel?.close(.closed("update session timed out")) }
+    }
+
+    /// Channels with a screen preview being captured (one at a time each).
+    private var previewing: Set<ObjectIdentifier> = []
+
+    private func sendPreview(maxWidth: Int, to channel: ControlChannel) {
+        let id = ObjectIdentifier(channel)
+        guard !previewing.contains(id) else { return }
+        previewing.insert(id)
+        ScreenPreview.capture(maxWidth: min(max(maxWidth, 160), 1600)) { [weak self, weak channel] preview in
+            guard let self else { return }
+            self.queue.async {
+                self.previewing.remove(id)
+                channel?.send(.preview(preview))
+            }
+        }
     }
 
     private func updateRequested(_ build: Int, by channel: ControlChannel) {

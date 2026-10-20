@@ -46,15 +46,26 @@ final class HostUpdates {
     /// Can this host be asked to update? (Signed-in without a pairing prompt, and new enough to understand.)
     static func canUpdate(_ target: ClientTarget, build: Int?) -> Bool {
         guard let build, build > 0 else { return false }
+        return signsInQuietly(target)
+    }
+
+    /// Signs in without showing anything on the host (no pairing code).
+    static func signsInQuietly(_ target: ClientTarget) -> Bool {
         switch target.auth {
         case .device, .tailscale: return true
         case .code, .legacyKey: return false
         }
     }
 
-    /// Ask the host which build it runs (only hosts known to support update connections).
+    private var lastRefresh: [String: Date] = [:]
+
+    /// Ask the host which build it runs, at most every 5 minutes. Also for a host whose build we don't know
+    /// yet (just paired); not for one known to be too old for update connections (build 0).
     func refresh(_ target: ClientTarget) {
-        guard HostUpdates.canUpdate(target, build: builds[target.label]), channels[target.label] == nil else { return }
+        let name = target.label
+        guard HostUpdates.signsInQuietly(target), builds[name] != 0, channels[name] == nil else { return }
+        if let last = lastRefresh[name], Date().timeIntervalSince(last) < 300 { return }
+        lastRefresh[name] = Date()
         open(target) { [weak self] channel in
             self?.note(build: channel.peerBuild, for: target.label)
             channel.close(.closed("checked build"))

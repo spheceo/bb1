@@ -1,4 +1,5 @@
 import AppKit
+import BB1Core
 
 /// Building blocks for the dashboard: flat, solid greys and white, like the app icon. No gradients or shadows.
 enum Style {
@@ -30,7 +31,7 @@ enum Style {
 
 /// A rounded button: `.primary` is solid white like the mark, `.secondary` is a faint outline.
 final class PillButton: NSButton {
-    enum Kind { case primary, secondary, link }
+    enum Kind { case primary, secondary, link, overlay }
     var kind: Kind { didSet { restyle() } }
     /// Compact size, for badges on cards.
     var small = false { didSet { restyle(); invalidateIntrinsicContentSize() } }
@@ -97,6 +98,12 @@ final class PillButton: NSButton {
             layer?.backgroundColor = .clear
             layer?.borderWidth = 0
             color = NSColor.white.withAlphaComponent(hovering ? 0.7 : 0.95)
+        case .overlay:
+            // On top of a screen picture: dark glass so it reads on any wallpaper.
+            layer?.backgroundColor = NSColor.black.withAlphaComponent(hovering ? 0.75 : 0.6).cgColor
+            layer?.borderWidth = 1
+            layer?.borderColor = NSColor.white.withAlphaComponent(0.18).cgColor
+            color = .white
         }
         attributedTitle = NSAttributedString(string: title, attributes: [
             .foregroundColor: color,
@@ -165,19 +172,27 @@ final class ToggleSwitch: NSControl {
 final class FlowView: NSView {
     var itemSize = NSSize(width: 228, height: 262)
     var spacing: CGFloat = 18
+    /// Given the width, how many columns and how big each item is (instead of a fixed `itemSize`).
+    var adaptive: ((CGFloat) -> (columns: Int, size: NSSize))?
     override var isFlipped: Bool { true }
 
     func setItems(_ views: [NSView]) {
+        // Same views in the same order: leave them be (keeps hover state and avoids flicker).
+        guard views.count != subviews.count || zip(views, subviews).contains(where: { $0 !== $1 }) else { return }
         subviews.forEach { $0.removeFromSuperview() }
         views.forEach { addSubview($0) }
         needsLayout = true
         invalidateIntrinsicContentSize()
     }
 
-    private var columns: Int { max(1, Int((bounds.width + spacing) / (itemSize.width + spacing))) }
+    private var columns: Int {
+        if let adaptive { return adaptive(bounds.width).columns }
+        return max(1, Int((bounds.width + spacing) / (itemSize.width + spacing)))
+    }
 
     override func layout() {
         super.layout()
+        if let adaptive { itemSize = adaptive(bounds.width).size }
         for (i, v) in subviews.enumerated() {
             let row = i / columns, col = i % columns
             v.frame = NSRect(x: CGFloat(col) * (itemSize.width + spacing), y: CGFloat(row) * (itemSize.height + spacing),
@@ -197,151 +212,8 @@ final class FlowView: NSView {
     }
 }
 
-/// One icon in the sidebar.
-final class SidebarButton: NSButton {
-    var selected = false { didSet { restyle() } }
-
-    init(symbol: String, tooltip: String, target: AnyObject, action: Selector) {
-        super.init(frame: .zero)
-        isBordered = false
-        wantsLayer = true
-        layer?.cornerRadius = 12
-        image = NSImage(systemSymbolName: symbol, accessibilityDescription: tooltip)?
-            .withSymbolConfiguration(.init(pointSize: 19, weight: .medium))
-        imagePosition = .imageOnly
-        toolTip = tooltip
-        self.target = target
-        self.action = action
-        translatesAutoresizingMaskIntoConstraints = false
-        widthAnchor.constraint(equalToConstant: 46).isActive = true
-        heightAnchor.constraint(equalToConstant: 46).isActive = true
-        restyle()
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-
-    private func restyle() {
-        layer?.backgroundColor = selected ? NSColor.white.withAlphaComponent(0.09).cgColor : .clear
-        layer?.borderWidth = selected ? 1 : 0
-        layer?.borderColor = NSColor.white.withAlphaComponent(0.07).cgColor
-        contentTintColor = selected ? .white : NSColor.white.withAlphaComponent(0.4)
-    }
-}
-
-/// A small rounded pill with a coloured dot and text (account / status).
-final class StatusChip: NSView {
-    private let dot = NSView()
-    private let text = Style.label("", size: 12, weight: .medium, color: .secondaryLabelColor)
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        wantsLayer = true
-        layer?.cornerRadius = 13
-        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.06).cgColor
-        dot.wantsLayer = true
-        dot.layer?.cornerRadius = 4
-        let stack = NSStackView(views: [dot, text])
-        stack.spacing = 7
-        stack.edgeInsets = NSEdgeInsets(top: 5, left: 11, bottom: 5, right: 12)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(stack)
-        NSLayoutConstraint.activate([
-            dot.widthAnchor.constraint(equalToConstant: 8), dot.heightAnchor.constraint(equalToConstant: 8),
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor), stack.trailingAnchor.constraint(equalTo: trailingAnchor),
-            stack.topAnchor.constraint(equalTo: topAnchor), stack.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-
-    func set(_ string: String, on: Bool) {
-        text.stringValue = string
-        dot.layer?.backgroundColor = (on ? Style.online : Style.offline).cgColor
-    }
-}
-
-/// Your Tailscale account, top right: round picture and name.
-final class AccountChip: NSView {
-    private let avatar = NSImageView()
-    private let name = Style.label("", size: 12.5, weight: .medium, color: .secondaryLabelColor)
-    private var pictureURL: URL?
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        wantsLayer = true
-        layer?.cornerRadius = 15
-        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.05).cgColor
-        layer?.borderWidth = 1
-        layer?.borderColor = Style.cardBorder.cgColor
-        avatar.wantsLayer = true
-        avatar.layer?.cornerRadius = 10
-        avatar.layer?.masksToBounds = true
-        avatar.imageScaling = .scaleProportionallyUpOrDown
-        let stack = NSStackView(views: [avatar, name])
-        stack.spacing = 8
-        stack.edgeInsets = NSEdgeInsets(top: 5, left: 5, bottom: 5, right: 13)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(stack)
-        NSLayoutConstraint.activate([
-            avatar.widthAnchor.constraint(equalToConstant: 20), avatar.heightAnchor.constraint(equalToConstant: 20),
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor), stack.trailingAnchor.constraint(equalTo: trailingAnchor),
-            stack.topAnchor.constraint(equalTo: topAnchor), stack.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
-        toolTip = "Your Tailscale account"
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-
-    func set(name text: String, picture: URL?, connected: Bool) {
-        name.stringValue = text
-        name.textColor = connected ? .labelColor : .secondaryLabelColor
-        if picture != pictureURL {
-            pictureURL = picture
-            avatar.image = NSImage(systemSymbolName: "person.crop.circle.fill", accessibilityDescription: nil)
-            avatar.contentTintColor = .secondaryLabelColor
-            if let picture {
-                URLSession.shared.dataTask(with: picture) { [weak self] data, _, _ in
-                    guard let data, let image = NSImage(data: data) else { return }
-                    DispatchQueue.main.async { self?.avatar.image = image }
-                }.resume()
-            }
-        }
-        if picture == nil {
-            avatar.image = NSImage(systemSymbolName: connected ? "person.crop.circle.fill" : "network.slash", accessibilityDescription: nil)
-            avatar.contentTintColor = .secondaryLabelColor
-        }
-    }
-}
-
-/// The big picture on a computer card: a flat Mac with the bb1 mark on its screen.
-/// Offline or unshared Macs are drawn dim.
+/// Drawing helpers for the bb1 mark.
 enum ComputerArt {
-    static let size = NSSize(width: 128, height: 88)
-
-    static func image(laptop: Bool, online: Bool) -> NSImage {
-        NSImage(size: size, flipped: false) { _ in
-            let body = NSColor.white.withAlphaComponent(online ? 0.22 : 0.1)
-            let screen = laptop ? NSRect(x: 18, y: 14, width: 92, height: 64) : NSRect(x: 12, y: 26, width: 104, height: 60)
-            body.setFill()
-            if laptop {
-                NSBezierPath(roundedRect: NSRect(x: 4, y: 6, width: 120, height: 8), xRadius: 4, yRadius: 4).fill()
-            } else {
-                NSBezierPath(rect: NSRect(x: 56, y: 10, width: 16, height: 16)).fill()
-                NSBezierPath(roundedRect: NSRect(x: 40, y: 6, width: 48, height: 5), xRadius: 2.5, yRadius: 2.5).fill()
-            }
-            let panel = NSBezierPath(roundedRect: screen.insetBy(dx: 0.75, dy: 0.75), xRadius: 8, yRadius: 8)
-            Style.background.setFill()
-            panel.fill()
-            body.setStroke()
-            panel.lineWidth = 1.5
-            panel.stroke()
-
-            let w: CGFloat = 34, h = w * 60 / 76
-            drawMark(in: NSRect(x: screen.midX - w / 2, y: screen.midY - h / 2, width: w, height: h), opacity: online ? 1 : 0.2)
-            return true
-        }
-    }
-
     /// The "Half" mark: a rounded screen outline with its left half solid (same proportions as the icon).
     static func drawMark(in rect: NSRect, opacity: CGFloat) {
         // One transparency layer, so the fill and outline don't double up where they overlap.
@@ -487,4 +359,333 @@ final class UpdatePill: NSButton {
 extension String {
     /// "Test build 9" → "test build 9", for use mid-sentence.
     var lowercasedFirst: String { prefix(1).lowercased() + dropFirst() }
+}
+
+// MARK: - Your Macs
+
+/// One of your other Macs: its screen (live, or the last one seen), its name and how it's doing.
+/// Click anywhere to connect; hover for the button, the menu and the outline.
+final class MacTile: NSView {
+    struct Model {
+        var name: String
+        var status: String
+        var live: Bool
+        var image: CGImage?
+        /// Offline: the picture goes grey and dark.
+        var dim: Bool
+        /// "Connect" / "Pair", or nil when there's nothing to do.
+        var action: String?
+        var progress: Double?
+        /// "Update" (this Mac runs an older bb1).
+        var badge: String?
+        var tooltip: String?
+    }
+
+    static let footerHeight: CGFloat = 64
+    var onClick: (() -> Void)?
+    var onBadge: (() -> Void)?
+    var makeMenu: (() -> NSMenu?)?
+
+    private let screen = NSView()
+    private let placeholder = NSImageView()
+    private let name = Style.label("", size: 14.5, weight: .semibold)
+    private let status = NSTextField(labelWithString: "")
+    private let progress = ProgressLine()
+    private lazy var actionButton = PillButton("Connect", kind: .primary, target: self, action: #selector(clicked))
+    private lazy var badgeButton = PillButton("Update", kind: .overlay, target: self, action: #selector(badgeClicked))
+    private lazy var menuButton: NSButton = {
+        let b = NSButton(image: NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "More")!
+            .withSymbolConfiguration(.init(pointSize: 12, weight: .bold))!, target: self, action: #selector(menuClicked))
+        b.isBordered = false
+        b.wantsLayer = true
+        b.layer?.cornerRadius = 13
+        b.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.6).cgColor
+        b.contentTintColor = .white
+        return b
+    }()
+    private var model: Model?
+    private var hovering = false { didSet { restyle() } }
+    private var area: NSTrackingArea?
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerRadius = 16
+        layer?.masksToBounds = true
+        layer?.backgroundColor = Style.cardFill.cgColor
+        layer?.borderWidth = 1
+        layer?.borderColor = Style.cardBorder.cgColor
+
+        screen.wantsLayer = true
+        screen.layerUsesCoreImageFilters = true
+        screen.layer?.backgroundColor = Style.graphite(0.055).cgColor
+        screen.layer?.contentsGravity = .resizeAspectFill
+        screen.layer?.masksToBounds = true
+        placeholder.image = MacTile.markImage
+        placeholder.imageScaling = .scaleNone
+        status.font = .systemFont(ofSize: 12)
+        status.lineBreakMode = .byTruncatingTail
+        status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        badgeButton.small = true
+        actionButton.small = true
+
+        for v in [screen, placeholder, name, status, progress, actionButton, badgeButton, menuButton] as [NSView] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(v)
+        }
+        NSLayoutConstraint.activate([
+            screen.leadingAnchor.constraint(equalTo: leadingAnchor),
+            screen.trailingAnchor.constraint(equalTo: trailingAnchor),
+            screen.topAnchor.constraint(equalTo: topAnchor),
+            screen.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -MacTile.footerHeight),
+            placeholder.centerXAnchor.constraint(equalTo: screen.centerXAnchor),
+            placeholder.centerYAnchor.constraint(equalTo: screen.centerYAnchor),
+            progress.leadingAnchor.constraint(equalTo: leadingAnchor),
+            progress.trailingAnchor.constraint(equalTo: trailingAnchor),
+            progress.topAnchor.constraint(equalTo: screen.bottomAnchor),
+            progress.heightAnchor.constraint(equalToConstant: 3),
+            name.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
+            name.topAnchor.constraint(equalTo: screen.bottomAnchor, constant: 13),
+            name.trailingAnchor.constraint(lessThanOrEqualTo: actionButton.leadingAnchor, constant: -10),
+            status.leadingAnchor.constraint(equalTo: name.leadingAnchor),
+            status.topAnchor.constraint(equalTo: name.bottomAnchor, constant: 3),
+            status.trailingAnchor.constraint(lessThanOrEqualTo: actionButton.leadingAnchor, constant: -10),
+            actionButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
+            actionButton.centerYAnchor.constraint(equalTo: bottomAnchor, constant: -MacTile.footerHeight / 2),
+            badgeButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            badgeButton.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            menuButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            menuButton.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            menuButton.widthAnchor.constraint(equalToConstant: 26),
+            menuButton.heightAnchor.constraint(equalToConstant: 26),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    func configure(_ m: Model) {
+        model = m
+        name.stringValue = m.name
+        let line = NSMutableAttributedString()
+        if m.live {
+            line.append(NSAttributedString(string: "● ", attributes: [.foregroundColor: Style.online, .font: NSFont.systemFont(ofSize: 9)]))
+        }
+        line.append(NSAttributedString(string: m.status, attributes: [
+            .foregroundColor: NSColor.white.withAlphaComponent(m.live ? 0.6 : 0.4), .font: NSFont.systemFont(ofSize: 12)]))
+        status.attributedStringValue = line
+        if screen.layer?.contents as! CGImage? !== m.image { screen.layer?.contents = m.image }
+        placeholder.isHidden = m.image != nil
+        screen.layer?.filters = m.dim && m.image != nil
+            ? [CIFilter(name: "CIColorControls", parameters: [kCIInputSaturationKey: 0, kCIInputBrightnessKey: -0.28])!] : nil
+        progress.isHidden = m.progress == nil
+        progress.value = m.progress ?? 0
+        if let action = m.action, actionButton.title != action { actionButton.title = action }
+        if let badge = m.badge, badgeButton.title != badge { badgeButton.title = badge }
+        toolTip = m.tooltip
+        restyle()
+    }
+
+    private func restyle() {
+        guard let m = model else { return }
+        let canAct = m.action != nil
+        layer?.borderColor = (hovering && canAct ? NSColor.white.withAlphaComponent(0.75) : Style.cardBorder).cgColor
+        layer?.borderWidth = hovering && canAct ? 1.5 : 1
+        layer?.backgroundColor = (hovering ? Style.cardHover : Style.cardFill).cgColor
+        actionButton.isHidden = !(hovering && canAct)
+        badgeButton.isHidden = m.badge == nil
+        menuButton.isHidden = !hovering || makeMenu?() == nil
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let area { removeTrackingArea(area) }
+        let a = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+        addTrackingArea(a)
+        area = a
+    }
+
+    override func mouseEntered(with event: NSEvent) { hovering = true }
+    override func mouseExited(with event: NSEvent) { hovering = false }
+    override func resetCursorRects() { if model?.action != nil { addCursorRect(bounds, cursor: .pointingHand) } }
+    override func mouseUp(with event: NSEvent) {
+        if bounds.contains(convert(event.locationInWindow, from: nil)) { clicked() }
+    }
+    override func menu(for event: NSEvent) -> NSMenu? { makeMenu?() }
+
+    @objc private func clicked() { if model?.action != nil { onClick?() } }
+    @objc private func badgeClicked() { onBadge?() }
+    @objc private func menuClicked() {
+        guard let menu = makeMenu?() else { return }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: menuButton.bounds.height + 4), in: menuButton)
+    }
+
+    static let markImage = NSImage(size: NSSize(width: 44, height: 35), flipped: false) { rect in
+        ComputerArt.drawMark(in: rect.insetBy(dx: 1, dy: 1), opacity: 0.16)
+        return true
+    }
+}
+
+/// This Mac, last on the page: the bb1 mark (solid while shared), and the sharing switch.
+final class ThisMacTile: NSView {
+    var onToggle: ((Bool) -> Void)?
+    var onFix: (() -> Void)?
+
+    private let markView = NSImageView()
+    private let name = Style.label("This Mac", size: 14.5, weight: .semibold)
+    private let status = NSTextField(labelWithString: "")
+    private let toggle = ToggleSwitch()
+    private lazy var fix = PillButton("Allow Access…", kind: .primary, target: self, action: #selector(fixClicked))
+    private let dash = CAShapeLayer()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerRadius = 16
+        dash.fillColor = nil
+        dash.strokeColor = NSColor.white.withAlphaComponent(0.16).cgColor
+        dash.lineWidth = 1
+        dash.lineDashPattern = [5, 4]
+        layer?.addSublayer(dash)
+        markView.imageScaling = .scaleNone
+        status.font = .systemFont(ofSize: 12)
+        status.lineBreakMode = .byTruncatingTail
+        status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        toggle.target = self
+        toggle.action = #selector(toggled)
+        fix.small = true
+        // The mark sits in the middle of the area above the footer.
+        let art = NSLayoutGuide()
+        addLayoutGuide(art)
+        for v in [markView, name, status, toggle, fix] as [NSView] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(v)
+        }
+        NSLayoutConstraint.activate([
+            art.topAnchor.constraint(equalTo: topAnchor),
+            art.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -MacTile.footerHeight),
+            markView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            markView.centerYAnchor.constraint(equalTo: art.centerYAnchor),
+            name.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
+            name.topAnchor.constraint(equalTo: bottomAnchor, constant: -MacTile.footerHeight + 13),
+            name.trailingAnchor.constraint(lessThanOrEqualTo: toggle.leadingAnchor, constant: -10),
+            status.leadingAnchor.constraint(equalTo: name.leadingAnchor),
+            status.topAnchor.constraint(equalTo: name.bottomAnchor, constant: 3),
+            status.trailingAnchor.constraint(lessThanOrEqualTo: toggle.leadingAnchor, constant: -10),
+            toggle.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
+            toggle.centerYAnchor.constraint(equalTo: bottomAnchor, constant: -MacTile.footerHeight / 2),
+            toggle.widthAnchor.constraint(equalToConstant: 36),
+            toggle.heightAnchor.constraint(equalToConstant: 20),
+            fix.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
+            fix.centerYAnchor.constraint(equalTo: toggle.centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        dash.frame = bounds
+        dash.path = CGPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), cornerWidth: 16, cornerHeight: 16, transform: nil)
+    }
+
+    func configure(shared: Bool, status text: String, live: Bool, problem: Bool) {
+        markView.image = ThisMacTile.mark(solid: shared)
+        let line = NSMutableAttributedString()
+        if live {
+            line.append(NSAttributedString(string: "● ", attributes: [.foregroundColor: Style.online, .font: NSFont.systemFont(ofSize: 9)]))
+        }
+        line.append(NSAttributedString(string: text, attributes: [
+            .foregroundColor: NSColor.white.withAlphaComponent(0.5), .font: NSFont.systemFont(ofSize: 12)]))
+        status.attributedStringValue = line
+        toggle.isOn = shared
+        toggle.isHidden = problem
+        fix.isHidden = !problem
+    }
+
+    @objc private func toggled() { onToggle?(toggle.isOn) }
+    @objc private func fixClicked() { onFix?() }
+
+    private static func mark(solid: Bool) -> NSImage {
+        NSImage(size: NSSize(width: 64, height: 51), flipped: false) { rect in
+            ComputerArt.drawMark(in: rect.insetBy(dx: 1, dy: 1), opacity: solid ? 1 : 0.22)
+            return true
+        }
+    }
+}
+
+/// A round icon button (the gear in the header).
+final class IconButton: NSButton {
+    private var hovering = false { didSet { restyle() } }
+    private var area: NSTrackingArea?
+
+    init(symbol: String, tooltip: String, target: AnyObject, action: Selector) {
+        super.init(frame: .zero)
+        image = NSImage(systemSymbolName: symbol, accessibilityDescription: tooltip)?
+            .withSymbolConfiguration(.init(pointSize: 13, weight: .medium))
+        imagePosition = .imageOnly
+        isBordered = false
+        toolTip = tooltip
+        self.target = target
+        self.action = action
+        wantsLayer = true
+        layer?.cornerRadius = 15
+        layer?.borderWidth = 1
+        layer?.borderColor = Style.cardBorder.cgColor
+        translatesAutoresizingMaskIntoConstraints = false
+        widthAnchor.constraint(equalToConstant: 30).isActive = true
+        heightAnchor.constraint(equalToConstant: 30).isActive = true
+        restyle()
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let area { removeTrackingArea(area) }
+        let a = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+        addTrackingArea(a)
+        area = a
+    }
+
+    override func mouseEntered(with event: NSEvent) { hovering = true }
+    override func mouseExited(with event: NSEvent) { hovering = false }
+
+    private func restyle() {
+        layer?.backgroundColor = NSColor.white.withAlphaComponent(hovering ? 0.08 : 0).cgColor
+        contentTintColor = NSColor.white.withAlphaComponent(hovering ? 0.9 : 0.6)
+    }
+}
+
+/// Your Tailscale account picture, round. The name is in the tooltip.
+final class AvatarView: NSImageView {
+    private var pictureURL: URL?
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerRadius = 15
+        layer?.masksToBounds = true
+        layer?.borderWidth = 1
+        layer?.borderColor = Style.cardBorder.cgColor
+        imageScaling = .scaleProportionallyUpOrDown
+        translatesAutoresizingMaskIntoConstraints = false
+        widthAnchor.constraint(equalToConstant: 30).isActive = true
+        heightAnchor.constraint(equalToConstant: 30).isActive = true
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    func set(name: String?, picture: URL?) {
+        toolTip = name.map { "Signed in to Tailscale as \($0)" } ?? (Tailscale.isInstalled ? "Tailscale is off" : "Tailscale isn't installed")
+        guard picture != pictureURL || image == nil else { return }
+        pictureURL = picture
+        image = NSImage(systemSymbolName: name == nil ? "network.slash" : "person.crop.circle.fill", accessibilityDescription: nil)
+        contentTintColor = NSColor.white.withAlphaComponent(0.5)
+        guard let picture else { return }
+        URLSession.shared.dataTask(with: picture) { [weak self] data, _, _ in
+            guard let data, let img = NSImage(data: data) else { return }
+            DispatchQueue.main.async { if self?.pictureURL == picture { self?.image = img } }
+        }.resume()
+    }
 }

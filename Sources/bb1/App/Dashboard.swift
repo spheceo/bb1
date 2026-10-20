@@ -16,7 +16,7 @@ protocol DashboardDelegate: AnyObject {
     func removeFromThisMac()
 }
 
-/// bb1's main window, laid out like Parsec: an icon sidebar and two pages, Computers and Settings.
+/// bb1's main window: Your Macs (live screens of your other Macs), with Settings behind the gear.
 final class Dashboard: NSObject, NSWindowDelegate {
     enum Page { case computers, settings }
 
@@ -24,8 +24,6 @@ final class Dashboard: NSObject, NSWindowDelegate {
     weak var delegate: DashboardDelegate?
     let directory = HostDirectory()
     private let content = NSView()
-    private var computersButton: SidebarButton!
-    private var settingsButton: SidebarButton!
     private var computers: ComputersPage?
     private var settingsPage: SettingsPage?
     private var page: Page = .computers
@@ -34,7 +32,7 @@ final class Dashboard: NSObject, NSWindowDelegate {
 
     init(delegate: DashboardDelegate) {
         self.delegate = delegate
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 660),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 680),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                           backing: .buffered, defer: false)
         super.init()
@@ -46,38 +44,8 @@ final class Dashboard: NSObject, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.minSize = NSSize(width: 640, height: 480)
-        window.setFrameAutosaveName("bb1.dashboard.v2")
-
-        let sidebar = NSView()
-        computersButton = SidebarButton(symbol: "display.2", tooltip: "Computers", target: self, action: #selector(showComputers))
-        settingsButton = SidebarButton(symbol: "gearshape", tooltip: "Settings", target: self, action: #selector(showSettings))
-        let icons = NSStackView(views: [computersButton, settingsButton])
-        icons.orientation = .vertical
-        icons.spacing = 10
-        let line = NSBox()
-        line.boxType = .custom
-        line.fillColor = Style.divider
-        line.borderWidth = 0
-
-        let root = NSView()
-        for v in [sidebar, icons, line, content] { v.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(v) }
-        NSLayoutConstraint.activate([
-            sidebar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            sidebar.topAnchor.constraint(equalTo: root.topAnchor),
-            sidebar.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            sidebar.widthAnchor.constraint(equalToConstant: 76),
-            icons.centerXAnchor.constraint(equalTo: sidebar.centerXAnchor),
-            icons.topAnchor.constraint(equalTo: root.topAnchor, constant: 64),
-            line.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
-            line.topAnchor.constraint(equalTo: root.topAnchor),
-            line.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            line.widthAnchor.constraint(equalToConstant: 1),
-            content.leadingAnchor.constraint(equalTo: line.trailingAnchor),
-            content.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            content.topAnchor.constraint(equalTo: root.topAnchor),
-            content.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-        ])
-        window.contentView = root
+        window.setFrameAutosaveName("bb1.dashboard.v3")
+        window.contentView = content
         window.center()
         directory.onChange = { [weak self] _ in self?.refresh() }
         directory.start()
@@ -98,6 +66,7 @@ final class Dashboard: NSObject, NSWindowDelegate {
     func hide() {
         timer?.invalidate()
         timer = nil
+        HostPreviews.shared.stopAll()
         window.orderOut(nil)
     }
 
@@ -107,13 +76,12 @@ final class Dashboard: NSObject, NSWindowDelegate {
         computers?.reload()
     }
 
-    @objc private func showComputers() { display(.computers) }
-    @objc private func showSettings() { display(.settings) }
+    func showComputers() { display(.computers) }
+    func showSettings() { display(.settings) }
 
     private func display(_ p: Page) {
         page = p
-        computersButton.selected = p == .computers
-        settingsButton.selected = p == .settings
+        if p != .computers { HostPreviews.shared.stopAll() }
         content.subviews.forEach { $0.removeFromSuperview() }
         let view: NSView
         switch p {
@@ -177,6 +145,7 @@ final class Dashboard: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         timer?.invalidate()
         timer = nil
+        HostPreviews.shared.stopAll()
         onClosed?()
     }
 }
@@ -186,10 +155,12 @@ final class Dashboard: NSObject, NSWindowDelegate {
 final class ComputersPage: NSView {
     private weak var dashboard: Dashboard?
     private let flow = FlowView()
-    private let account = AccountChip()
+    private let avatar = AvatarView()
     private lazy var pill = UpdatePill(target: self, action: #selector(pillClicked))
     private let message = Style.label("", size: 12, color: .secondaryLabelColor)
     private var entries: [HostDirectory.Entry] = []
+    private var tiles: [String: MacTile] = [:]
+    private let thisMac = ThisMacTile()
     /// Per Mac: connect over the home network instead of Tailscale (Tailscale is the default).
     private static var preferHome: [String: Bool] {
         get { UserDefaults.standard.dictionary(forKey: "bb1.preferHome") as? [String: Bool] ?? [:] }
@@ -200,23 +171,31 @@ final class ComputersPage: NSView {
         self.dashboard = dashboard
         super.init(frame: .zero)
 
-        let title = Style.label("Your Macs", size: 30, weight: .bold)
+        // Header, in the title bar row: the brand after the window buttons; update, settings and account on the right.
+        let brandMark = NSImageView(image: NSImage(size: NSSize(width: 18, height: 14), flipped: false) { rect in
+            ComputerArt.drawMark(in: rect.insetBy(dx: 0.5, dy: 0.5), opacity: 1)
+            return true
+        })
+        let brandName = Style.label("bb1", size: 14, weight: .bold)
+        let brand = NSStackView(views: [brandMark, brandName])
+        brand.spacing = 7
+        let gear = IconButton(symbol: "gearshape", tooltip: "Settings", target: self, action: #selector(openSettings))
+        let corner = NSStackView(views: [pill, gear, avatar])
+        corner.spacing = 10
+        corner.alignment = .centerY
+        corner.detachesHiddenViews = true
+        pill.isHidden = true
+
+        let title = NSTextField(labelWithAttributedString: NSAttributedString(string: "Your Macs", attributes: [
+            .font: NSFont.systemFont(ofSize: 30, weight: .bold), .kern: -0.6, .foregroundColor: NSColor.white]))
         let add = NSButton(image: NSImage(systemSymbolName: "plus", accessibilityDescription: "Connect by address")!
             .withSymbolConfiguration(.init(pointSize: 15, weight: .semibold))!, target: self, action: #selector(connectByAddress))
         add.isBordered = false
-        add.contentTintColor = NSColor.white.withAlphaComponent(0.45)
+        add.contentTintColor = NSColor.white.withAlphaComponent(0.4)
         add.toolTip = "Connect by address"
         let titleRow = NSStackView(views: [title, add])
         titleRow.spacing = 10
         titleRow.alignment = .centerY
-        let subtitle = Style.label("Low-latency desktop, with sound and a shared clipboard.", size: 13, color: .secondaryLabelColor)
-        let titles = NSStackView(views: [titleRow, subtitle])
-        titles.orientation = .vertical
-        titles.alignment = .leading
-        titles.spacing = 4
-        let header = NSStackView(views: [titles, NSView(), account])
-        header.alignment = .top
-        header.distribution = .fill
 
         let scroll = NSScrollView()
         scroll.drawsBackground = false
@@ -225,42 +204,51 @@ final class ComputersPage: NSView {
         let doc = FlippedView()
         doc.translatesAutoresizingMaskIntoConstraints = false
         flow.translatesAutoresizingMaskIntoConstraints = false
-        flow.itemSize = NSSize(width: 248, height: 262)
-        flow.spacing = 22
+        flow.spacing = 20
+        // Big screens: two across in a normal window, one when narrow, three when wide.
+        flow.adaptive = { width in
+            let gap: CGFloat = 20
+            let columns = max(1, min(3, Int((width + gap) / (340 + gap))))
+            let w = floor((width - CGFloat(columns - 1) * gap) / CGFloat(columns))
+            return (columns, NSSize(width: w, height: floor(w * 10 / 16) + MacTile.footerHeight))
+        }
         doc.addSubview(flow)
         scroll.documentView = doc
         NSLayoutConstraint.activate([
             flow.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
             flow.trailingAnchor.constraint(equalTo: doc.trailingAnchor),
-            flow.topAnchor.constraint(equalTo: doc.topAnchor, constant: 6),
+            flow.topAnchor.constraint(equalTo: doc.topAnchor, constant: 4),
             flow.bottomAnchor.constraint(equalTo: doc.bottomAnchor, constant: -28),
             doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
         ])
 
-        let column = NSStackView(views: [header, scroll, message])
-        column.orientation = .vertical
-        column.alignment = .leading
-        column.spacing = 26
-        column.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(column)
-        for v in [header, scroll] as [NSView] { v.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
+        for v in [brand, corner, titleRow, scroll, message] as [NSView] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(v)
+        }
         NSLayoutConstraint.activate([
-            column.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 44),
-            column.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -44),
-            column.topAnchor.constraint(equalTo: topAnchor, constant: 54),
-            column.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -20),
+            brand.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 86),
+            brand.centerYAnchor.constraint(equalTo: topAnchor, constant: 21),
+            corner.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
+            corner.centerYAnchor.constraint(equalTo: topAnchor, constant: 22),
+            titleRow.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 40),
+            titleRow.topAnchor.constraint(equalTo: topAnchor, constant: 70),
+            scroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 40),
+            scroll.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -40),
+            scroll.topAnchor.constraint(equalTo: titleRow.bottomAnchor, constant: 24),
+            scroll.bottomAnchor.constraint(equalTo: message.topAnchor, constant: -8),
+            message.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 40),
+            message.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -40),
+            message.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -14),
         ])
-        scroll.setContentHuggingPriority(.init(1), for: .vertical)
-        // The update pill sits just left of the account chip, outside the header's layout,
-        // so showing and hiding it never moves anything.
-        pill.isHidden = true
-        pill.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(pill)
-        NSLayoutConstraint.activate([
-            pill.trailingAnchor.constraint(equalTo: account.leadingAnchor, constant: -10),
-            pill.centerYAnchor.constraint(equalTo: account.centerYAnchor),
-        ])
-        for name in [Updater.changed, HostUpdates.changed] {
+
+        thisMac.onToggle = { [weak self] on in
+            guard let app = self?.dashboard?.delegate else { return }
+            app.setHosting(on)
+            self?.reload()
+        }
+        thisMac.onFix = { [weak self] in self?.dashboard?.showSettings() }
+        for name in [Updater.changed, HostUpdates.changed, HostPreviews.changed] {
             NotificationCenter.default.addObserver(self, selector: #selector(updatesChanged), name: name, object: nil)
         }
     }
@@ -274,14 +262,26 @@ final class ComputersPage: NSView {
     func reload() {
         guard let dashboard, let app = dashboard.delegate else { return }
         entries = dashboard.directory.entries
-        if let name = dashboard.directory.tailscaleName {
-            account.set(name: name, picture: dashboard.directory.tailscalePicture, connected: true)
-        } else {
-            account.set(name: Tailscale.isInstalled ? "Tailscale off" : "No Tailscale", picture: nil, connected: false)
+        avatar.set(name: dashboard.directory.tailscaleName, picture: dashboard.directory.tailscalePicture)
+
+        var views: [NSView] = []
+        var previewTargets: [ClientTarget] = []
+        for (i, e) in entries.enumerated() {
+            let tile = tiles[e.name] ?? MacTile()
+            tiles[e.name] = tile
+            tile.configure(model(for: e))
+            tile.onClick = { [weak self] in self?.connect(index: i) }
+            tile.onBadge = { [weak self] in self?.updateHost(index: i) }
+            tile.makeMenu = { [weak self] in self?.menu(index: i) }
+            views.append(tile)
+            if e.online, let target = ComputersPage.target(for: e),
+               HostPreviews.canPreview(target, build: HostUpdates.shared.builds[e.name]) { previewTargets.append(target) }
         }
-        var cards: [NSView] = [thisMacCard(app)]
-        for (i, e) in entries.enumerated() { cards.append(card(for: e, index: i)) }
-        flow.setItems(cards)
+        tiles = tiles.filter { name, _ in entries.contains { $0.name == name } }
+        configureThisMac(app)
+        views.append(thisMac)
+        flow.setItems(views)
+        if window?.isVisible == true { HostPreviews.shared.keepFresh(previewTargets) }
         for e in entries where e.online {
             if let target = ComputersPage.target(for: e) { HostUpdates.shared.refresh(target) }
         }
@@ -365,27 +365,77 @@ final class ComputersPage: NSView {
         names.count <= 1 ? names.joined() : names.dropLast().joined(separator: ", ") + " and " + names.last!
     }
 
-    // MARK: Cards
+    // MARK: Tiles
 
-    private func thisMacCard(_ app: DashboardDelegate) -> NSView {
-        let hosting = app.isHosting
-        var status = ("Not shared", false)
+    private func configureThisMac(_ app: DashboardDelegate) {
+        var status = "Not shared"
+        var live = false
         var problem = false
-        if hosting {
-            if let name = app.hostRole?.host.status().clientName { status = ("\(name) is connected", true) }
-            else { status = ("Sharing", true) }
-            if app.hostRole?.hasProblem == true { status = ("Needs permissions", false); problem = true }
+        if app.isHosting {
+            if app.hostRole?.hasProblem == true {
+                status = "Needs permissions"
+                problem = true
+            } else if let client = app.hostRole?.host.status().clientName {
+                status = "\(client) is connected"
+                live = true
+            } else {
+                status = app.startsAtLogin ? "Shared · starts at login" : "Shared"
+                live = true
+            }
         }
-        let button: PillButton
-        if problem {
-            button = PillButton("Allow Access…", kind: .primary, target: self, action: #selector(openSettings))
-        } else if hosting {
-            button = PillButton("Stop Sharing", kind: .secondary, target: self, action: #selector(toggleSharing))
-        } else {
-            button = PillButton("Share This Mac", kind: .primary, target: self, action: #selector(toggleSharing))
+        thisMac.configure(shared: app.isHosting, status: status, live: live, problem: problem)
+        thisMac.toolTip = "\(DeviceIdentity.name) · build \(BB1.build)"
+    }
+
+    private func model(for e: HostDirectory.Entry) -> MacTile.Model {
+        let target = ComputersPage.target(for: e)
+        let pairing: Bool = { if case .code? = target?.auth { return true }; return false }()
+        let phase = HostUpdates.shared.phases[e.name]
+        let preview = HostPreviews.shared.preview(for: e.name)
+        var status: String
+        var live = e.online
+        var progress: Double?
+        var tooltip: String?
+        switch phase {
+        case .starting?: status = "Getting ready to update…"
+        case .downloading(let p)?: status = "Updating · \(Int(p * 100))%"; progress = p
+        case .installing?: status = "Installing update…"; progress = 1
+        case .restarting?: status = "Restarting…"; progress = 1
+        case .waiting?: status = "Starting up…"; progress = 1
+        case .done(let build)?: status = "Updated to build \(build)"
+        case .failed(let why)?: status = "Update didn't finish"; live = false; tooltip = why
+        case nil:
+            if !e.online {
+                status = preview.map { "Offline · seen \(ComputersPage.ago($0.at))" } ?? "Offline"
+            } else if pairing {
+                status = "Online · needs pairing"
+            } else if let ms = HostPreviews.shared.latencyMs[e.name] {
+                status = "Online · \(Int(ms.rounded())) ms"
+            } else {
+                status = "Online"
+            }
         }
-        return makeCard(name: "This Mac", detail: DeviceIdentity.name, status: status.0, live: status.1,
-                        laptop: DeviceIdentity.name.contains("MacBook"), dimmed: !hosting, menu: nil, button: button)
+        let updating = phase.map { !$0.finished } ?? false
+        var badge: String?
+        if !updating, e.online, let latest = Updater.shared.latest, let target,
+           let build = HostUpdates.shared.builds[e.name], build < latest.build, HostUpdates.canUpdate(target, build: build) {
+            badge = phase == nil ? "Update" : "Retry update"
+            tooltip = tooltip ?? "\(e.name) has build \(build). Update it to \(latest.title.lowercasedFirst)."
+        }
+        return MacTile.Model(name: e.name, status: status, live: live, image: preview?.image, dim: !e.online,
+                             action: e.online && target != nil && !updating ? (pairing ? "Pair" : "Connect") : nil,
+                             progress: progress, badge: badge, tooltip: tooltip)
+    }
+
+    /// "just now", "5 min ago", "2 h ago", "3 days ago"
+    static func ago(_ date: Date) -> String {
+        let s = Date().timeIntervalSince(date)
+        switch s {
+        case ..<60: return "just now"
+        case ..<3600: return "\(Int(s / 60)) min ago"
+        case ..<86_400: return "\(Int(s / 3600)) h ago"
+        default: let d = Int(s / 86_400); return d == 1 ? "yesterday" : "\(d) days ago"
+        }
     }
 
     private static func usesTailscale(_ e: HostDirectory.Entry) -> Bool {
@@ -397,148 +447,28 @@ final class ComputersPage: NSView {
         HostDirectory.target(for: e, preferTailscale: ComputersPage.usesTailscale(e))
     }
 
-    private func card(for e: HostDirectory.Entry, index: Int) -> NSView {
-        let target = ComputersPage.target(for: e)
-        let pairing: Bool = { if case .code? = target?.auth { return true }; return false }()
-        let phase = HostUpdates.shared.phases[e.name]
-        var status: String
-        var live = e.online
-        if let phase {
-            switch phase {
-            case .starting: status = "Starting update…"
-            case .downloading(let p): status = "Downloading update · \(Int(p * 100))%"
-            case .installing: status = "Installing update…"
-            case .restarting: status = "Restarting bb1…"
-            case .waiting: status = "Starting up…"
-            case .done(let build): status = "Updated to build \(build)"
-            case .failed(let why): status = "Update failed: \(why)"; live = false
-            }
-        } else if !e.online {
-            status = "Offline"
-        } else if target?.tailscaleIP != nil {
-            status = e.known != nil ? "Online · Tailscale" : "On your Tailscale"
-        } else {
-            status = e.known != nil ? "Online · Home network" : "Not paired yet"
-        }
-        let updating = phase.map { !$0.finished } ?? false
-        let button = PillButton(updating ? "Updating…" : !e.online ? "Offline" : pairing ? "Pair" : "Connect", kind: .primary,
-                                target: self, action: #selector(connectCard(_:)))
-        button.tag = index
-        button.isEnabled = e.online && target != nil && !updating
-
-        let menuButton = NSButton(image: NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "More")!
-            .withSymbolConfiguration(.init(pointSize: 13, weight: .semibold))!, target: self, action: #selector(showMenu(_:)))
-        menuButton.isBordered = false
-        menuButton.contentTintColor = NSColor.white.withAlphaComponent(0.45)
-        menuButton.tag = index
-        let hasMenu = e.known != nil || (e.lan != nil && e.tailscaleIP != nil)
-        var badge: PillButton?
-        if !updating, e.online, let latest = Updater.shared.latest, let target,
-           let build = HostUpdates.shared.builds[e.name], build < latest.build, HostUpdates.canUpdate(target, build: build) {
-            let b = PillButton(phase == nil ? "Update" : "Retry Update", kind: .secondary, target: self, action: #selector(updateCard(_:)))
-            b.small = true
-            b.tag = index
-            b.toolTip = "\(e.name) has build \(build). Update it to \(latest.title.lowercasedFirst)."
-            badge = b
-        }
-        let card = makeCard(name: e.name, detail: nil, status: status, live: live, laptop: e.name.contains("MacBook"),
-                            dimmed: !e.online, menu: hasMenu ? menuButton : nil, button: button, badge: badge,
-                            progress: { if case .downloading(let p)? = phase { return p }; return nil }())
-        card.toolTip = phase.flatMap { if case .failed(let why) = $0 { return why }; return nil }
-        return card
-    }
-
-    private func makeCard(name: String, detail: String?, status: String, live: Bool, laptop: Bool, dimmed: Bool,
-                          menu: NSButton?, button: PillButton, badge: PillButton? = nil, progress: Double? = nil) -> NSView {
-        let card = CardView(radius: 16)
-        let art = NSImageView(image: ComputerArt.image(laptop: laptop, online: !dimmed))
-        art.imageScaling = .scaleNone
-        let title = Style.label(name, size: 15, weight: .semibold)
-        title.allowsDefaultTighteningForTruncation = true
-        let statusLine = NSTextField(labelWithAttributedString: {
-            let s = NSMutableAttributedString(string: "● ", attributes: [
-                .foregroundColor: live ? Style.online : Style.offline, .font: NSFont.systemFont(ofSize: 9)])
-            s.append(NSAttributedString(string: status, attributes: [
-                .foregroundColor: NSColor.secondaryLabelColor, .font: NSFont.systemFont(ofSize: 12)]))
-            return s
-        }())
-        statusLine.lineBreakMode = .byTruncatingTail
-        var views: [NSView] = [art, title, statusLine, button]
-        var detailLabel: NSTextField?
-        if let detail {
-            let d = Style.label(detail, size: 12, color: .tertiaryLabelColor)
-            views.append(d)
-            detailLabel = d
-        }
-        if let menu { views.append(menu) }
-        if let badge { views.append(badge) }
-        let bar = ProgressLine()
-        if let progress { bar.value = progress; views.append(bar) }
-        for v in views { v.translatesAutoresizingMaskIntoConstraints = false; card.addSubview(v) }
-        var c: [NSLayoutConstraint] = [
-            art.centerXAnchor.constraint(equalTo: card.centerXAnchor),
-            art.topAnchor.constraint(equalTo: card.topAnchor, constant: 30),
-            art.widthAnchor.constraint(equalToConstant: ComputerArt.size.width),
-            art.heightAnchor.constraint(equalToConstant: ComputerArt.size.height),
-            title.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 20),
-            title.trailingAnchor.constraint(lessThanOrEqualTo: card.trailingAnchor, constant: -20),
-            title.topAnchor.constraint(equalTo: art.bottomAnchor, constant: 22),
-            statusLine.leadingAnchor.constraint(equalTo: title.leadingAnchor),
-            statusLine.trailingAnchor.constraint(lessThanOrEqualTo: card.trailingAnchor, constant: -20),
-            button.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 20),
-            button.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -20),
-            button.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -20),
-            button.heightAnchor.constraint(equalToConstant: 34),
-        ]
-        if let detailLabel {
-            c += [detailLabel.leadingAnchor.constraint(equalTo: title.leadingAnchor),
-                  detailLabel.trailingAnchor.constraint(lessThanOrEqualTo: card.trailingAnchor, constant: -20),
-                  detailLabel.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 2),
-                  statusLine.topAnchor.constraint(equalTo: detailLabel.bottomAnchor, constant: 4)]
-        } else {
-            c.append(statusLine.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 4))
-        }
-        if let badge {
-            c += [badge.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
-                  badge.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12)]
-        }
-        if progress != nil {
-            c += [bar.leadingAnchor.constraint(equalTo: art.leadingAnchor, constant: 18),
-                  bar.trailingAnchor.constraint(equalTo: art.trailingAnchor, constant: -18),
-                  bar.topAnchor.constraint(equalTo: art.bottomAnchor, constant: 6),
-                  bar.heightAnchor.constraint(equalToConstant: 3)]
-        }
-        if let menu {
-            c += [menu.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
-                  menu.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
-                  menu.widthAnchor.constraint(equalToConstant: 26), menu.heightAnchor.constraint(equalToConstant: 22)]
-        }
-        NSLayoutConstraint.activate(c)
-        return card
-    }
-
-    // MARK: Actions
-
-    @objc private func showMenu(_ sender: NSButton) {
-        guard sender.tag < entries.count else { return }
-        let e = entries[sender.tag]
+    private func menu(index: Int) -> NSMenu? {
+        guard index < entries.count else { return nil }
+        let e = entries[index]
         let menu = NSMenu()
         if e.lan != nil && e.tailscaleIP != nil {
             let ts = NSMenuItem(title: "Connect over Tailscale", action: #selector(useTailscale(_:)), keyEquivalent: "")
             ts.state = ComputersPage.usesTailscale(e) ? .on : .off
             let home = NSMenuItem(title: "Connect over Home Network", action: #selector(useHome(_:)), keyEquivalent: "")
             home.state = ComputersPage.usesTailscale(e) ? .off : .on
-            for item in [ts, home] { item.target = self; item.tag = sender.tag; menu.addItem(item) }
+            for item in [ts, home] { item.target = self; item.tag = index; menu.addItem(item) }
         }
         if e.known != nil {
             if !menu.items.isEmpty { menu.addItem(.separator()) }
             let forget = NSMenuItem(title: "Forget This Mac", action: #selector(forget(_:)), keyEquivalent: "")
             forget.target = self
-            forget.tag = sender.tag
+            forget.tag = index
             menu.addItem(forget)
         }
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
+        return menu.items.isEmpty ? nil : menu
     }
+
+    // MARK: Actions
 
     @objc private func useTailscale(_ sender: NSMenuItem) {
         guard sender.tag < entries.count else { return }
@@ -558,16 +488,16 @@ final class ComputersPage: NSView {
         dashboard?.directory.rebuild()
     }
 
-    @objc private func updateCard(_ sender: NSButton) {
-        guard sender.tag < entries.count, let latest = Updater.shared.latest,
-              let target = ComputersPage.target(for: entries[sender.tag]) else { return }
+    private func updateHost(index: Int) {
+        guard index < entries.count, let latest = Updater.shared.latest,
+              let target = ComputersPage.target(for: entries[index]) else { return }
         HostUpdates.shared.update(target, to: latest.build)
     }
 
-    @objc private func connectCard(_ sender: NSButton) {
-        guard sender.tag < entries.count else { return }
-        let e = entries[sender.tag]
-        guard let target = HostDirectory.target(for: e, preferTailscale: ComputersPage.usesTailscale(e)) else { return }
+    private func connect(index: Int) {
+        guard index < entries.count else { return }
+        let e = entries[index]
+        guard let target = ComputersPage.target(for: e) else { return }
         if case .code = target.auth { setMessage("A 6-digit code will appear on \(e.name)'s screen.") }
         dashboard?.delegate?.connect(target)
     }
@@ -620,6 +550,8 @@ final class SettingsPage: NSView {
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
+        // Lines up with "Your Macs" (no extra inset for the title bar).
+        scroll.automaticallyAdjustsContentInsets = false
         let doc = FlippedView()
         doc.translatesAutoresizingMaskIntoConstraints = false
         doc.addSubview(stack)
@@ -632,10 +564,18 @@ final class SettingsPage: NSView {
             scroll.topAnchor.constraint(equalTo: topAnchor),
             scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
             doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
-            stack.leadingAnchor.constraint(equalTo: doc.leadingAnchor, constant: 44),
-            stack.trailingAnchor.constraint(equalTo: doc.trailingAnchor, constant: -44),
-            stack.topAnchor.constraint(equalTo: doc.topAnchor, constant: 56),
+            stack.leadingAnchor.constraint(equalTo: doc.leadingAnchor, constant: 40),
+            stack.trailingAnchor.constraint(equalTo: doc.trailingAnchor, constant: -40),
+            stack.topAnchor.constraint(equalTo: doc.topAnchor, constant: 70),
             stack.bottomAnchor.constraint(equalTo: doc.bottomAnchor, constant: -30),
+        ])
+        // Back to Your Macs, in the title bar row where the brand sits on the other page.
+        let back = PillButton("‹  Your Macs", kind: .link, target: self, action: #selector(goBack))
+        back.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(back)
+        NSLayoutConstraint.activate([
+            back.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 86),
+            back.centerYAnchor.constraint(equalTo: topAnchor, constant: 21),
         ])
         logText.isEditable = false
         logText.drawsBackground = false
@@ -659,6 +599,8 @@ final class SettingsPage: NSView {
         dashboard?.delegate?.removeFromThisMac()
     }
 
+    @objc private func goBack() { dashboard?.showComputers() }
+
     @objc private func checkForUpdates() { Updater.shared.check(userInitiated: true) }
 
     @objc private func updateNow() {
@@ -674,7 +616,8 @@ final class SettingsPage: NSView {
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         switchActions.removeAll()
         let s = app.settings
-        add(Style.label("Settings", size: 30, weight: .bold))
+        add(NSTextField(labelWithAttributedString: NSAttributedString(string: "Settings", attributes: [
+            .font: NSFont.systemFont(ofSize: 30, weight: .bold), .kern: -0.6, .foregroundColor: NSColor.white])))
 
         section("This Mac")
         addSwitch("Share this Mac", "Let your other Macs view and control this one.", app.isHosting) { app.setHosting($0) }
