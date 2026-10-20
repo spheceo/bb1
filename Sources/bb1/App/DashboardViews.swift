@@ -1,17 +1,12 @@
 import AppKit
 
-/// Building blocks for the dashboard. Colours come from the app icon: a graphite tile that darkens
-/// top to bottom, a faint white edge, a soft drop shadow, and the mark in plain white.
+/// Building blocks for the dashboard: flat, solid greys and white, like the app icon. No gradients or shadows.
 enum Style {
     static func graphite(_ v: CGFloat) -> NSColor { NSColor(srgbRed: v, green: v * 1.03, blue: v * 1.12, alpha: 1) }
-    static let backdropTop = graphite(0.105)
-    static let backdropBottom = graphite(0.06)
-    static let sidebar = graphite(0.07)
-    static let cardTop = graphite(0.155)
-    static let cardBottom = graphite(0.11)
-    static let cardHoverTop = graphite(0.18)
-    static let cardHoverBottom = graphite(0.13)
-    static let cardBorder = NSColor.white.withAlphaComponent(0.08)
+    static let background = graphite(0.085)
+    static let cardFill = graphite(0.125)
+    static let cardHover = graphite(0.15)
+    static let cardBorder = NSColor.white.withAlphaComponent(0.06)
     static let divider = NSColor.white.withAlphaComponent(0.06)
     static let ink = graphite(0.07)
     static let online = NSColor(srgbRed: 0.18, green: 0.85, blue: 0.53, alpha: 1)
@@ -107,52 +102,22 @@ final class PillButton: NSButton {
     }
 }
 
-/// A rounded card drawn like the app icon's tile: a top-to-bottom graphite gradient, a faint
-/// white edge and (when `elevated`) a soft shadow. Lightens on hover.
+/// A flat rounded card that lightens on hover.
 class CardView: NSView {
     private var area: NSTrackingArea?
-    private let fill = CAGradientLayer()
-    private let elevated: Bool
 
-    init(elevated: Bool = false) {
-        self.elevated = elevated
+    init(radius: CGFloat = 12) {
         super.init(frame: .zero)
         wantsLayer = true
-        let radius: CGFloat = elevated ? 18 : 12
         layer?.cornerRadius = radius
-        layer?.masksToBounds = false
+        layer?.backgroundColor = Style.cardFill.cgColor
         layer?.borderWidth = 1
         layer?.borderColor = Style.cardBorder.cgColor
-        fill.cornerRadius = radius
-        fill.masksToBounds = true
-        layer?.insertSublayer(fill, at: 0)
-        if elevated {
-            layer?.shadowColor = NSColor.black.cgColor
-            layer?.shadowOpacity = 0.4
-            layer?.shadowRadius = 14
-            layer?.shadowOffset = CGSize(width: 0, height: -6)
-        }
-        setHover(false)
     }
 
-    override convenience init(frame: NSRect) { self.init(elevated: false) }
+    override convenience init(frame: NSRect) { self.init() }
 
     required init?(coder: NSCoder) { fatalError() }
-
-    override func layout() {
-        super.layout()
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        fill.frame = bounds
-        if elevated, let layer { layer.shadowPath = CGPath(roundedRect: bounds, cornerWidth: layer.cornerRadius, cornerHeight: layer.cornerRadius, transform: nil) }
-        CATransaction.commit()
-    }
-
-    private func setHover(_ on: Bool) {
-        // Layer y runs bottom-up, so the first colour is the bottom.
-        fill.colors = on ? [Style.cardHoverBottom.cgColor, Style.cardHoverTop.cgColor]
-                         : [Style.cardBottom.cgColor, Style.cardTop.cgColor]
-    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -162,15 +127,8 @@ class CardView: NSView {
         area = a
     }
 
-    override func mouseEntered(with event: NSEvent) { setHover(true) }
-    override func mouseExited(with event: NSEvent) { setHover(false) }
-}
-
-/// The window background: the icon tile's graphite, a little lighter at the top.
-final class BackdropView: NSView {
-    override func draw(_ dirtyRect: NSRect) {
-        NSGradient(starting: Style.backdropBottom, ending: Style.backdropTop)!.draw(in: bounds, angle: 90)
-    }
+    override func mouseEntered(with event: NSEvent) { layer?.backgroundColor = Style.cardHover.cgColor }
+    override func mouseExited(with event: NSEvent) { layer?.backgroundColor = Style.cardFill.cgColor }
 }
 
 /// An on/off switch in white and graphite (NSSwitch only comes in the system accent colour).
@@ -350,44 +308,31 @@ final class AccountChip: NSView {
     }
 }
 
-/// The big picture on a computer card: a Mac whose screen is the app icon (graphite, white mark).
+/// The big picture on a computer card: a flat Mac with the bb1 mark on its screen.
 /// Offline or unshared Macs are drawn dim.
 enum ComputerArt {
     static let size = NSSize(width: 128, height: 88)
 
     static func image(laptop: Bool, online: Bool) -> NSImage {
         NSImage(size: size, flipped: false) { _ in
+            let body = NSColor.white.withAlphaComponent(online ? 0.22 : 0.1)
             let screen = laptop ? NSRect(x: 18, y: 14, width: 92, height: 64) : NSRect(x: 12, y: 26, width: 104, height: 60)
+            body.setFill()
             if laptop {
-                let base = NSBezierPath(roundedRect: NSRect(x: 4, y: 6, width: 120, height: 8), xRadius: 4, yRadius: 4)
-                NSGradient(starting: NSColor.white.withAlphaComponent(online ? 0.16 : 0.07),
-                           ending: NSColor.white.withAlphaComponent(online ? 0.32 : 0.12))!.draw(in: base, angle: 90)
-                NSColor.black.withAlphaComponent(0.35).setFill()
-                NSBezierPath(roundedRect: NSRect(x: 52, y: 11, width: 24, height: 3), xRadius: 1.5, yRadius: 1.5).fill()
+                NSBezierPath(roundedRect: NSRect(x: 4, y: 6, width: 120, height: 8), xRadius: 4, yRadius: 4).fill()
             } else {
-                NSColor.white.withAlphaComponent(online ? 0.18 : 0.08).setFill()
                 NSBezierPath(rect: NSRect(x: 56, y: 10, width: 16, height: 16)).fill()
-                NSColor.white.withAlphaComponent(online ? 0.26 : 0.1).setFill()
                 NSBezierPath(roundedRect: NSRect(x: 40, y: 6, width: 48, height: 5), xRadius: 2.5, yRadius: 2.5).fill()
             }
-            let panel = NSBezierPath(roundedRect: screen, xRadius: 8, yRadius: 8)
-            NSGradient(starting: Style.graphite(online ? 0.07 : 0.06), ending: Style.graphite(online ? 0.2 : 0.11))!
-                .draw(in: panel, angle: 90)
-            NSColor.white.withAlphaComponent(online ? 0.22 : 0.09).setStroke()
+            let panel = NSBezierPath(roundedRect: screen.insetBy(dx: 0.75, dy: 0.75), xRadius: 8, yRadius: 8)
+            Style.background.setFill()
+            panel.fill()
+            body.setStroke()
             panel.lineWidth = 1.5
             panel.stroke()
 
             let w: CGFloat = 34, h = w * 60 / 76
-            let mark = NSRect(x: screen.midX - w / 2, y: screen.midY - h / 2, width: w, height: h)
-            NSGraphicsContext.saveGraphicsState()
-            if online {
-                let glow = NSShadow()
-                glow.shadowColor = NSColor.white.withAlphaComponent(0.35)
-                glow.shadowBlurRadius = 10
-                glow.set()
-            }
-            drawMark(in: mark, opacity: online ? 1 : 0.2)
-            NSGraphicsContext.restoreGraphicsState()
+            drawMark(in: NSRect(x: screen.midX - w / 2, y: screen.midY - h / 2, width: w, height: h), opacity: online ? 1 : 0.2)
             return true
         }
     }

@@ -41,15 +41,13 @@ final class Dashboard: NSObject, NSWindowDelegate {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.appearance = NSAppearance(named: .darkAqua)
-        window.backgroundColor = Style.backdropBottom
+        window.backgroundColor = Style.background
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.minSize = NSSize(width: 640, height: 480)
         window.setFrameAutosaveName("bb1.dashboard.v2")
 
         let sidebar = NSView()
-        sidebar.wantsLayer = true
-        sidebar.layer?.backgroundColor = Style.sidebar.cgColor
         computersButton = SidebarButton(symbol: "display.2", tooltip: "Computers", target: self, action: #selector(showComputers))
         settingsButton = SidebarButton(symbol: "gearshape", tooltip: "Settings", target: self, action: #selector(showSettings))
         let icons = NSStackView(views: [computersButton, settingsButton])
@@ -60,7 +58,7 @@ final class Dashboard: NSObject, NSWindowDelegate {
         line.fillColor = Style.divider
         line.borderWidth = 0
 
-        let root = BackdropView()
+        let root = NSView()
         for v in [sidebar, icons, line, content] { v.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(v) }
         NSLayoutConstraint.activate([
             sidebar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
@@ -211,8 +209,6 @@ final class ComputersPage: NSView {
             column.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -20),
         ])
         scroll.setContentHuggingPriority(.init(1), for: .vertical)
-        scroll.contentView.wantsLayer = true
-        scroll.contentView.layer?.masksToBounds = false
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -287,7 +283,7 @@ final class ComputersPage: NSView {
 
     private func makeCard(name: String, detail: String?, status: String, live: Bool, laptop: Bool, dimmed: Bool,
                           menu: NSButton?, button: PillButton) -> NSView {
-        let card = CardView(elevated: true)
+        let card = CardView(radius: 16)
         let art = NSImageView(image: ComputerArt.image(laptop: laptop, online: !dimmed))
         art.imageScaling = .scaleNone
         let title = Style.label(name, size: 15, weight: .semibold)
