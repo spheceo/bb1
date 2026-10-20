@@ -84,6 +84,8 @@ final class ScreenSource: NSObject, FrameSource, SCStreamOutput, SCStreamDelegat
                     }
                     self.stream = stream
                     self.config = cfg
+                    // The client may have changed the cursor setting while capture was starting.
+                    if cfg.showsCursor != self.showsCursor { self.setShowsCursor(self.showsCursor) }
                     Log.info("capture: started display \(display.displayID) at \(width)x\(height) @\(self.fps)fps, cursor \(self.showsCursor ? "in video" : "hidden")")
                     completion(.success((width, height)))
                 }
@@ -103,10 +105,11 @@ final class ScreenSource: NSObject, FrameSource, SCStreamOutput, SCStreamDelegat
 
     func setShowsCursor(_ show: Bool) {
         showsCursor = show
-        guard let stream, let config else { return }
+        guard let stream, let config else { return } // not started yet: applied once it starts
         config.showsCursor = show
         stream.updateConfiguration(config) { error in
             if let error { Log.info("capture: couldn't change cursor setting: \(error.localizedDescription)") }
+            else { Log.info("capture: cursor \(show ? "in video" : "hidden (client draws its own)")") }
         }
     }
 

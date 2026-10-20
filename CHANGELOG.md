@@ -2,6 +2,12 @@
 
 Versions only change the last number (v0.0.1, v0.0.2, …) unless decided otherwise.
 
+## v0.0.2 — 2026-10-20
+
+- **Fixed:** two cursors showed on first connect when using this Mac's cursor. The client's choice could arrive while the host was still starting screen capture, and got lost. It's now applied as soon as capture starts.
+- The app version is shown in Settings → About and written to the log at startup.
+- Releases are built as `dist/bb1-v<version>.zip` (`scripts/release.sh`).
+
 ## v0.0.1 — 2026-10-20
 
 First version.
