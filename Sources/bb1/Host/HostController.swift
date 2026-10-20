@@ -654,6 +654,8 @@ final class HostController {
             injector.scroll(sc)
         case .releaseAll:
             injector.releaseAll()
+        case .capsLock(let on):
+            injector.setCapsLock(on)
         case .setCursorInVideo(let inVideo):
             pipeline.setShowsCursor(inVideo)
             // The client draws its own cursor: keep it the same shape as this Mac's.

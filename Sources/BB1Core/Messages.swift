@@ -189,4 +189,6 @@ public enum ControlMessage: Codable {
     // Version 4
     case paired(PairedMsg)
     case cursor(CursorMsg)
+    /// Client → host: Caps Lock is on/off on the client; match it.
+    case capsLock(Bool)
 }

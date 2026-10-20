@@ -286,6 +286,7 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
             onKey: { connection.send(.key($0)) },
             onLocalCommand: { [weak self] code in self?.localCommand(code) })
         keyboard.forwardKeys = { [weak self] in self?.settings.input.keyboard ?? false }
+        keyboard.onCapsLock = { connection.send(.capsLock($0)) }
         connection.setSound(settings.sound)
 
         for name in [NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification] {
@@ -351,6 +352,8 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
             wasCapturing = now
             if now {
                 Log.info("client: input → host (\(settings.input.title))")
+                // Caps Lock may have changed while bb1 wasn't in front.
+                connection.send(.capsLock(NSEvent.modifierFlags.contains(.capsLock)))
             } else {
                 let why = !connected ? "not connected" : !NSApp.isActive ? "bb1 is in the background" : "window not focused"
                 Log.info("client: input released (\(why))")

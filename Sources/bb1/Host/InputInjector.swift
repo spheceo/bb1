@@ -1,6 +1,7 @@
 import BB1Core
 import CoreGraphics
 import Foundation
+import IOKit.hidsystem
 
 /// Replays the client's mouse and keyboard on this Mac. Needs Accessibility permission.
 final class InputInjector {
@@ -9,6 +10,7 @@ final class InputInjector {
     private var buttonsDown = Set<Int>()
     private var lastPoint = CGPoint.zero
     private var scrollRemainder = (x: 0.0, y: 0.0)
+    private var capsLockOn = false
     var invertScroll = false
 
     // Virtual key code → (generic flag, device-specific left/right bit)
@@ -22,7 +24,7 @@ final class InputInjector {
     private static let capsLock: UInt16 = 57
 
     private var flags: CGEventFlags {
-        var raw: UInt64 = 0
+        var raw: UInt64 = capsLockOn ? CGEventFlags.maskAlphaShift.rawValue : 0
         for key in keysDown {
             if let (flag, device) = InputInjector.modifiers[key] { raw |= flag.rawValue | device }
         }
@@ -91,8 +93,30 @@ final class InputInjector {
         e.post(tap: .cghidEventTap)
     }
 
+    /// Match the client's Caps Lock: set this Mac's real Caps Lock (so the light and every app agree),
+    /// and mark typed letters as capitals while it's on.
+    func setCapsLock(_ on: Bool) {
+        guard on != capsLockOn || on != InputInjector.systemCapsLock() else { return }
+        capsLockOn = on
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching(kIOHIDSystemClass))
+        guard service != 0 else { return }
+        defer { IOObjectRelease(service) }
+        var connect: io_connect_t = 0
+        guard IOServiceOpen(service, mach_task_self_, UInt32(kIOHIDParamConnectType), &connect) == KERN_SUCCESS else {
+            Log.info("input: couldn't open the keyboard driver to set Caps Lock")
+            return
+        }
+        defer { IOServiceClose(connect) }
+        let result = IOHIDSetModifierLockState(connect, Int32(kIOHIDCapsLockState), on)
+        Log.info("input: Caps Lock \(on ? "on" : "off")\(result == KERN_SUCCESS ? "" : " (couldn't set the system state: \(result))")")
+    }
+
+    private static func systemCapsLock() -> Bool {
+        CGEventSource.flagsState(.hidSystemState).contains(.maskAlphaShift)
+    }
+
     func key(_ k: KeyMsg) {
-        if k.code == InputInjector.capsLock { return } // Can't toggle the real caps lock state from here.
+        if k.code == InputInjector.capsLock { return } // handled by setCapsLock
         let isModifier = InputInjector.modifiers[k.code] != nil
         if k.down { keysDown.insert(k.code) } else { keysDown.remove(k.code) }
         guard let e = CGEvent(keyboardEventSource: source, virtualKey: k.code, keyDown: k.down) else { return }

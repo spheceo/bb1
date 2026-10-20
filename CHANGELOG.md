@@ -1,20 +1,11 @@
 # Changelog
 
-Versions only change the last number (v0.0.1, v0.0.2, …) unless decided otherwise.
+Version numbers only change the last digit, and only when the owner says to make a release.
+Between releases, test builds are `dist/bb1-<version>-build<N>.zip`.
 
-## v0.0.3 — 2026-10-20
+## v0.0.1 — not released yet (first release)
 
-- **Fixed:** a single click that didn't change the screen could make the host think screen capture had frozen and restart it (harmless, but unnecessary). It now takes 3+ clicks or keys with no new frame for 4 seconds.
-
-## v0.0.2 — 2026-10-20
-
-- **Fixed:** two cursors showed on first connect when using this Mac's cursor. The client's choice could arrive while the host was still starting screen capture, and got lost. It's now applied as soon as capture starts.
-- The app version is shown in Settings → About and written to the log at startup.
-- Releases are built as `dist/bb1-v<version>.zip` (`scripts/release.sh`).
-
-## v0.0.1 — 2026-10-20
-
-First version.
+Everything so far. This version stays frozen until the first release.
 
 - **One app for both roles.** Share this Mac and/or connect to your other Macs. Parsec-style dashboard (Your Macs, Settings), menu bar icon, Dock icon options, keeps running in the menu bar.
 - **Streaming:** native-resolution screen capture (ScreenCaptureKit), hardware HEVC in low-latency mode, 60 fps, UDP with packet resend on loss, ~10–15 ms capture-to-screen on a home network.
@@ -32,3 +23,7 @@ First version.
 - **Logging:** both sides' per-second stats (including CPU and memory) in the host's log, plus stall, hitch and memory-pressure lines.
 - **Stream options:** fullscreen, fill screen, scaling (fit / stretch / actual pixels).
 - **Idle cost:** about 1% CPU on the client when the screen is still.
+- **Caps Lock** on the client now works on the host: its state is synced, and the host's real Caps Lock follows it.
+- Fixed: two cursors on first connect when using this Mac's cursor. The setting could arrive while capture was starting, and got lost.
+- The host's capture-freeze check needs 3+ clicks or keys with no new frame for 4 s, so a single quiet click can't trigger it.
+- The app version is shown in Settings → About and logged at startup.

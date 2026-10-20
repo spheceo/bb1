@@ -22,6 +22,8 @@ final class KeyboardCapture {
     /// False in Mouse-only / View-only mode: keys stay on this Mac (shortcuts still work).
     var forwardKeys: () -> Bool = { true }
     private let onKey: (KeyMsg) -> Void
+    /// Caps Lock turned on/off on this Mac (it isn't sent as a key; the host matches the state).
+    var onCapsLock: ((Bool) -> Void)?
     private let onLocalCommand: (UInt16) -> Void
 
     private var tap: CFMachPort?
@@ -47,6 +49,10 @@ final class KeyboardCapture {
                     if !event.isARepeat { self.onLocalCommand(event.keyCode) }
                     return nil
                 }
+                return event
+            }
+            if event.type == .flagsChanged && event.keyCode == 57 {
+                self.onCapsLock?(event.modifierFlags.contains(.capsLock))
                 return event
             }
             let kind: CGEventType = event.type == .keyDown ? .keyDown : event.type == .keyUp ? .keyUp : .flagsChanged
@@ -117,6 +123,11 @@ final class KeyboardCapture {
         }
         guard isActive() else { return Unmanaged.passUnretained(event) }
         let code = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+        if type == .flagsChanged && code == 57 {
+            // Caps Lock: let this Mac toggle it as usual, and tell the host the new state.
+            onCapsLock?(event.flags.contains(.maskAlphaShift))
+            return Unmanaged.passUnretained(event)
+        }
         if !forwardKeys() {
             // Keys stay on this Mac; only bb1's own shortcuts are taken.
             if type == .keyDown, isLocalChord(code, event.flags) {
@@ -155,7 +166,10 @@ final class KeyboardCapture {
             if swallowedKeyUps.remove(code) != nil { return }
             onKey(KeyMsg(code: code, down: false, isRepeat: false))
         case .flagsChanged:
-            guard code != 57 else { return } // caps lock
+            if code == 57 { // caps lock: report the state instead of sending a key
+                onCapsLock?(flags.contains(.maskAlphaShift))
+                return
+            }
             let down: Bool
             if let bit = KeyboardCapture.modifierBits[code] {
                 down = flags.rawValue & bit != 0
