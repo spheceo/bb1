@@ -41,16 +41,15 @@ final class Dashboard: NSObject, NSWindowDelegate {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.appearance = NSAppearance(named: .darkAqua)
-        window.backgroundColor = NSColor(srgbRed: 0.105, green: 0.11, blue: 0.12, alpha: 1)
+        window.backgroundColor = Style.backdropBottom
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.minSize = NSSize(width: 640, height: 480)
         window.setFrameAutosaveName("bb1.dashboard.v2")
 
-        let sidebar = NSVisualEffectView()
-        sidebar.material = .sidebar
-        sidebar.blendingMode = .behindWindow
-        sidebar.state = .active
+        let sidebar = NSView()
+        sidebar.wantsLayer = true
+        sidebar.layer?.backgroundColor = Style.sidebar.cgColor
         computersButton = SidebarButton(symbol: "display.2", tooltip: "Computers", target: self, action: #selector(showComputers))
         settingsButton = SidebarButton(symbol: "gearshape", tooltip: "Settings", target: self, action: #selector(showSettings))
         let icons = NSStackView(views: [computersButton, settingsButton])
@@ -61,7 +60,7 @@ final class Dashboard: NSObject, NSWindowDelegate {
         line.fillColor = Style.divider
         line.borderWidth = 0
 
-        let root = NSView()
+        let root = BackdropView()
         for v in [sidebar, icons, line, content] { v.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(v) }
         NSLayoutConstraint.activate([
             sidebar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
@@ -165,7 +164,7 @@ final class ComputersPage: NSView {
         let add = NSButton(image: NSImage(systemSymbolName: "plus", accessibilityDescription: "Connect by address")!
             .withSymbolConfiguration(.init(pointSize: 15, weight: .semibold))!, target: self, action: #selector(connectByAddress))
         add.isBordered = false
-        add.contentTintColor = .secondaryLabelColor
+        add.contentTintColor = NSColor.white.withAlphaComponent(0.45)
         add.toolTip = "Connect by address"
         let titleRow = NSStackView(views: [title, add])
         titleRow.spacing = 10
@@ -186,14 +185,15 @@ final class ComputersPage: NSView {
         let doc = FlippedView()
         doc.translatesAutoresizingMaskIntoConstraints = false
         flow.translatesAutoresizingMaskIntoConstraints = false
-        flow.itemSize = NSSize(width: 244, height: 252)
+        flow.itemSize = NSSize(width: 248, height: 262)
+        flow.spacing = 22
         doc.addSubview(flow)
         scroll.documentView = doc
         NSLayoutConstraint.activate([
             flow.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
             flow.trailingAnchor.constraint(equalTo: doc.trailingAnchor),
-            flow.topAnchor.constraint(equalTo: doc.topAnchor, constant: 4),
-            flow.bottomAnchor.constraint(equalTo: doc.bottomAnchor, constant: -8),
+            flow.topAnchor.constraint(equalTo: doc.topAnchor, constant: 6),
+            flow.bottomAnchor.constraint(equalTo: doc.bottomAnchor, constant: -28),
             doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
         ])
 
@@ -211,6 +211,8 @@ final class ComputersPage: NSView {
             column.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -20),
         ])
         scroll.setContentHuggingPriority(.init(1), for: .vertical)
+        scroll.contentView.wantsLayer = true
+        scroll.contentView.layer?.masksToBounds = false
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -276,7 +278,7 @@ final class ComputersPage: NSView {
         let menuButton = NSButton(image: NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "More")!
             .withSymbolConfiguration(.init(pointSize: 13, weight: .semibold))!, target: self, action: #selector(showMenu(_:)))
         menuButton.isBordered = false
-        menuButton.contentTintColor = .secondaryLabelColor
+        menuButton.contentTintColor = NSColor.white.withAlphaComponent(0.45)
         menuButton.tag = index
         let hasMenu = e.known != nil || (e.lan != nil && e.tailscaleIP != nil)
         return makeCard(name: e.name, detail: nil, status: status, live: e.online, laptop: e.name.contains("MacBook"),
@@ -285,12 +287,10 @@ final class ComputersPage: NSView {
 
     private func makeCard(name: String, detail: String?, status: String, live: Bool, laptop: Bool, dimmed: Bool,
                           menu: NSButton?, button: PillButton) -> NSView {
-        let card = CardView()
+        let card = CardView(elevated: true)
         let art = NSImageView(image: ComputerArt.image(laptop: laptop, online: !dimmed))
-        art.imageScaling = .scaleProportionallyUpOrDown
-        let mark = NSImageView(image: MenuBarIcon.image)
-        mark.contentTintColor = dimmed ? NSColor.white.withAlphaComponent(0.4) : NSColor(white: 0.13, alpha: 1)
-        let title = Style.label(name, size: 14.5, weight: .semibold)
+        art.imageScaling = .scaleNone
+        let title = Style.label(name, size: 15, weight: .semibold)
         title.allowsDefaultTighteningForTruncation = true
         let statusLine = NSTextField(labelWithAttributedString: {
             let s = NSMutableAttributedString(string: "● ", attributes: [
@@ -300,7 +300,7 @@ final class ComputersPage: NSView {
             return s
         }())
         statusLine.lineBreakMode = .byTruncatingTail
-        var views: [NSView] = [art, mark, title, statusLine, button]
+        var views: [NSView] = [art, title, statusLine, button]
         var detailLabel: NSTextField?
         if let detail {
             let d = Style.label(detail, size: 12, color: .tertiaryLabelColor)
@@ -311,14 +311,12 @@ final class ComputersPage: NSView {
         for v in views { v.translatesAutoresizingMaskIntoConstraints = false; card.addSubview(v) }
         var c: [NSLayoutConstraint] = [
             art.centerXAnchor.constraint(equalTo: card.centerXAnchor),
-            art.topAnchor.constraint(equalTo: card.topAnchor, constant: 26),
-            art.widthAnchor.constraint(equalToConstant: 108),
-            art.heightAnchor.constraint(equalToConstant: 82),
-            mark.centerXAnchor.constraint(equalTo: art.centerXAnchor),
-            mark.centerYAnchor.constraint(equalTo: art.centerYAnchor, constant: laptop ? -6 : -10),
+            art.topAnchor.constraint(equalTo: card.topAnchor, constant: 30),
+            art.widthAnchor.constraint(equalToConstant: ComputerArt.size.width),
+            art.heightAnchor.constraint(equalToConstant: ComputerArt.size.height),
             title.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 20),
             title.trailingAnchor.constraint(lessThanOrEqualTo: card.trailingAnchor, constant: -20),
-            title.topAnchor.constraint(equalTo: art.bottomAnchor, constant: 20),
+            title.topAnchor.constraint(equalTo: art.bottomAnchor, constant: 22),
             statusLine.leadingAnchor.constraint(equalTo: title.leadingAnchor),
             statusLine.trailingAnchor.constraint(lessThanOrEqualTo: card.trailingAnchor, constant: -20),
             button.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 20),
@@ -470,7 +468,7 @@ final class SettingsPage: NSView {
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         switchActions.removeAll()
         let s = app.settings
-        add(Style.label("Settings", size: 34))
+        add(Style.label("Settings", size: 30, weight: .bold))
 
         section("This Mac")
         addSwitch("Share this Mac", "Let your other Macs view and control this one.", app.isHosting) { app.setHosting($0) }
@@ -564,16 +562,16 @@ final class SettingsPage: NSView {
     }
 
     private func addSwitch(_ title: String, _ detail: String, _ on: Bool, _ changed: @escaping (Bool) -> Void) {
-        let sw = NSSwitch()
-        sw.state = on ? .on : .off
+        let sw = ToggleSwitch()
+        sw.isOn = on
         sw.target = self
         sw.action = #selector(switchChanged(_:))
         switchActions[ObjectIdentifier(sw)] = changed
         addRow(title, detail, sw)
     }
 
-    @objc private func switchChanged(_ sender: NSSwitch) {
-        switchActions[ObjectIdentifier(sender)]?(sender.state == .on)
+    @objc private func switchChanged(_ sender: ToggleSwitch) {
+        switchActions[ObjectIdentifier(sender)]?(sender.isOn)
         DispatchQueue.main.async { self.reload() }
     }
 
