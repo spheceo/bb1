@@ -82,12 +82,8 @@ func render(scale: CGFloat) -> Data {
     folder.draw(in: NSRect(x: 480 - 56, y: H - 196 - 56, width: 112, height: 112))
     text("Applications", size: 13, weight: .regular, color: .white, x: 480, top: 262)
 
-    // Instructions along the bottom, one line per half.
+    // The one instruction, along the bottom of the light half.
     text("Drag bb1 into Applications", size: 12, weight: .medium, color: ink.withAlphaComponent(0.55), x: 160, top: 346)
-    text("Blocked the first time? Open System Settings", size: 11, weight: .regular,
-         color: NSColor.white.withAlphaComponent(0.45), x: 480, top: 338)
-    text("→ Privacy & Security → Open Anyway", size: 11, weight: .regular,
-         color: NSColor.white.withAlphaComponent(0.45), x: 480, top: 354)
 
     NSGraphicsContext.restoreGraphicsState()
     return rep.representation(using: .png, properties: [:])!
