@@ -29,6 +29,8 @@ struct AppSettings: Codable {
     var allowPairing = true
     /// Share this Mac (run the host). nil = decide from the older `mode` setting.
     var hosting: Bool?
+    /// Offer test builds (GitHub pre-releases) as updates, not just releases.
+    var testBuilds = true
 
     var isHosting: Bool { hosting ?? (mode == .host) }
 
@@ -42,6 +44,7 @@ struct AppSettings: Codable {
         allowTailscale = try c.decodeIfPresent(Bool.self, forKey: .allowTailscale) ?? true
         allowPairing = try c.decodeIfPresent(Bool.self, forKey: .allowPairing) ?? true
         hosting = try c.decodeIfPresent(Bool.self, forKey: .hosting)
+        testBuilds = try c.decodeIfPresent(Bool.self, forKey: .testBuilds) ?? true
     }
 
     private static var url: URL { BB1.supportDirectory().appendingPathComponent("settings.json") }
@@ -110,6 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dashbo
         dashboard.onClosed = { [weak self] in self?.clientRole.windowsClosed() }
 
         if hosting { startHost() }
+        Updater.shared.start()
         if clientOptions.host != nil {
             role.start()
         } else if !launchedAtLogin {
@@ -224,6 +228,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dashbo
         open.target = self
         open.attributedTitle = NSAttributedString(string: "Open bb1", attributes: [.font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)])
         menu.addItem(open)
+        if case .available(let r) = Updater.shared.state {
+            let update = NSMenuItem(title: "Update to \(r.title.lowercasedFirst)…", action: #selector(openDashboard), keyEquivalent: "")
+            update.target = self
+            menu.addItem(update)
+        }
         menu.addItem(.separator())
         hostRole?.addItems(to: menu)
         clientRole.addItems(to: menu)

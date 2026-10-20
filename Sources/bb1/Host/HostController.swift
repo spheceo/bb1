@@ -214,6 +214,8 @@ final class HostController {
     private var udpListener: NWListener?
     private var pendingUDP: [NWConnection] = []
     private var handshaking: [ControlChannel] = []
+    /// Connections that only check this Mac's build or ask it to update (they don't stream).
+    private var updateChannels: [ControlChannel] = []
     private(set) var session: HostSession?
     private var nextSessionId = UInt32.random(in: 1...UInt32.max / 2)
     private var lastPointerUs: UInt64 = 0
@@ -437,11 +439,16 @@ final class HostController {
         channel.onAuthenticated = { [weak self, weak channel] keys in
             guard let self, let channel else { return }
             self.handshaking.removeAll { $0 === channel }
-            self.startSession(channel, keys: keys)
+            if channel.purpose == "update" {
+                self.startUpdateSession(channel)
+            } else {
+                self.startSession(channel, keys: keys)
+            }
         }
         channel.onClose = { [weak self, weak channel] reason in
             guard let self, let channel else { return }
             self.handshaking.removeAll { $0 === channel }
+            self.updateChannels.removeAll { $0 === channel }
             if case .rejected(let why) = reason { Log.info("host: rejected \(channel.peerName) (\(conn.endpoint)): \(why)") }
             if self.pairing?.channel === channel { self.finishPairing(false) }
             if self.session?.control === channel { self.endSession("client disconnected") }
@@ -595,6 +602,30 @@ final class HostController {
         notifyChange()
     }
 
+    // MARK: Updates
+
+    /// A client checking this Mac's build, or asking it to update. Leaves any stream alone.
+    private func startUpdateSession(_ channel: ControlChannel) {
+        updateChannels.append(channel)
+        channel.onMessage = { [weak self, weak channel] message in
+            guard let self, let channel, case .updateHost(let build) = message else { return }
+            self.updateRequested(build, by: channel)
+        }
+        // Don't keep idle ones around.
+        queue.asyncAfter(deadline: .now() + 600) { [weak channel] in channel?.close(.closed("update session timed out")) }
+    }
+
+    private func updateRequested(_ build: Int, by channel: ControlChannel) {
+        Log.info("host: \(channel.peerName) asked this Mac to update from build \(BB1.build) to \(build)")
+        if let s = session, s.control !== channel {
+            s.control.send(.notice("bb1 on this Mac is updating to build \(build). It will be back in a moment."))
+        }
+        let reply: (UpdateStatusMsg) -> Void = { [weak self, weak channel] status in
+            self?.queue.async { channel?.send(.updateStatus(status)) }
+        }
+        DispatchQueue.main.async { Updater.shared.installBuild(build, report: reply) }
+    }
+
     private func endSession(_ reason: String) {
         guard let s = session else { return }
         Log.info("host: session \(s.id) with \(s.name) ended: \(reason)")
@@ -656,6 +687,8 @@ final class HostController {
             injector.releaseAll()
         case .capsLock(let on):
             injector.setCapsLock(on)
+        case .updateHost(let build):
+            updateRequested(build, by: s.control)
         case .setCursorInVideo(let inVideo):
             pipeline.setShowsCursor(inVideo)
             // The client draws its own cursor: keep it the same shape as this Mac's.

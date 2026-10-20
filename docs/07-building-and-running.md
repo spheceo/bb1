@@ -67,6 +67,8 @@ swift run bb1 client    # from a terminal on the client Mac
 
 macOS attributes permissions to the terminal app here, so grant Screen Recording and Accessibility to the terminal once.
 
+**Updates:** once installed, bb1 updates itself from GitHub releases (see [decision 0005](decisions/0005-self-update.md)). `scripts/release.sh --publish` publishes a test build; the app offers it as an update, and the client can update the host too.
+
 **Daily use:**
 
 ```sh

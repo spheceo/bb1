@@ -134,6 +134,44 @@ final class Dashboard: NSObject, NSWindowDelegate {
         ])
     }
 
+    // MARK: Updating
+
+    /// Other Macs being updated as part of `updateEverything` (this Mac goes last).
+    private(set) var updatingHosts: Set<String> = []
+    private(set) var pendingRelease: AppRelease?
+
+    /// Update your other Macs that are behind (each downloads the build itself), then this one.
+    func updateEverything(_ release: AppRelease) {
+        guard !Updater.shared.state.busy, updatingHosts.isEmpty else { return }
+        let targets = hostsBehind(release)
+        guard !targets.isEmpty else {
+            if release.build > BB1.build { Updater.shared.install(release) }
+            return
+        }
+        pendingRelease = release
+        updatingHosts = Set(targets.map(\.label))
+        for t in targets {
+            HostUpdates.shared.update(t, to: release.build) { [weak self] _ in
+                guard let self else { return }
+                self.updatingHosts.remove(t.label)
+                guard self.updatingHosts.isEmpty else { return }
+                self.pendingRelease = nil
+                if release.build > BB1.build { Updater.shared.install(release) } else { self.refresh() }
+            }
+        }
+        refresh()
+    }
+
+    /// Online Macs on an older build that can be updated from here (and aren't updating already).
+    func hostsBehind(_ release: AppRelease) -> [ClientTarget] {
+        directory.entries.compactMap { e in
+            guard e.online, let build = HostUpdates.shared.builds[e.name], build < release.build,
+                  HostUpdates.shared.phases[e.name].map({ $0.finished }) ?? true,
+                  let target = ComputersPage.target(for: e), HostUpdates.canUpdate(target, build: build) else { return nil }
+            return target
+        }
+    }
+
     func windowWillClose(_ notification: Notification) {
         timer?.invalidate()
         timer = nil
@@ -147,11 +185,13 @@ final class ComputersPage: NSView {
     private weak var dashboard: Dashboard?
     private let flow = FlowView()
     private let account = AccountChip()
+    private let banner = UpdateBanner()
     private let message = Style.label("", size: 12, color: .secondaryLabelColor)
     private var entries: [HostDirectory.Entry] = []
     /// Per Mac: connect over the home network instead of Tailscale (Tailscale is the default).
-    private var preferHome: [String: Bool] = UserDefaults.standard.dictionary(forKey: "bb1.preferHome") as? [String: Bool] ?? [:] {
-        didSet { UserDefaults.standard.set(preferHome, forKey: "bb1.preferHome") }
+    private static var preferHome: [String: Bool] {
+        get { UserDefaults.standard.dictionary(forKey: "bb1.preferHome") as? [String: Bool] ?? [:] }
+        set { UserDefaults.standard.set(newValue, forKey: "bb1.preferHome") }
     }
 
     init(dashboard: Dashboard) {
@@ -195,13 +235,15 @@ final class ComputersPage: NSView {
             doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
         ])
 
-        let column = NSStackView(views: [header, scroll, message])
+        banner.isHidden = true
+        let column = NSStackView(views: [header, banner, scroll, message])
+        column.detachesHiddenViews = true
         column.orientation = .vertical
         column.alignment = .leading
         column.spacing = 26
         column.translatesAutoresizingMaskIntoConstraints = false
         addSubview(column)
-        for v in [header, scroll] as [NSView] { v.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
+        for v in [header, banner, scroll] as [NSView] { v.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
         NSLayoutConstraint.activate([
             column.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 44),
             column.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -44),
@@ -209,7 +251,12 @@ final class ComputersPage: NSView {
             column.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -20),
         ])
         scroll.setContentHuggingPriority(.init(1), for: .vertical)
+        for name in [Updater.changed, HostUpdates.changed] {
+            NotificationCenter.default.addObserver(self, selector: #selector(updatesChanged), name: name, object: nil)
+        }
     }
+
+    @objc private func updatesChanged() { reload() }
 
     required init?(coder: NSCoder) { fatalError() }
 
@@ -226,6 +273,82 @@ final class ComputersPage: NSView {
         var cards: [NSView] = [thisMacCard(app)]
         for (i, e) in entries.enumerated() { cards.append(card(for: e, index: i)) }
         flow.setItems(cards)
+        for e in entries where e.online {
+            if let target = ComputersPage.target(for: e) { HostUpdates.shared.refresh(target) }
+        }
+        reloadBanner()
+    }
+
+    // MARK: Update banner
+
+    private func reloadBanner() {
+        guard let dashboard else { return }
+        let updater = Updater.shared
+        func busy(_ r: AppRelease, _ step: String, _ p: Double) {
+            banner.show(title: "Updating to \(r.title.lowercasedFirst)…", subtitle: step, progress: p)
+        }
+        switch updater.state {
+        case .downloading(let r, let p): busy(r, "Downloading · \(Int(p * 100))%", p); return
+        case .installing(let r): busy(r, "Installing…", 1); return
+        case .restarting(let r): busy(r, "Restarting bb1…", 1); return
+        default: break
+        }
+        if let r = dashboard.pendingRelease, !dashboard.updatingHosts.isEmpty {
+            let names = dashboard.updatingHosts.sorted()
+            let progress = names.map { name -> Double in
+                switch HostUpdates.shared.phases[name] {
+                case .downloading(let p)?: return p * 0.8
+                case .installing?, .restarting?: return 0.85
+                case .waiting?: return 0.95
+                case .done?, .failed?: return 1
+                default: return 0
+                }
+            }.reduce(0, +) / Double(names.count)
+            let then = r.build > BB1.build ? ", then this Mac" : ""
+            busy(r, "Updating \(ComputersPage.list(names)) first\(then)", progress)
+            return
+        }
+        let whatsNew = { (r: AppRelease) -> PillButton in
+            let b = PillButton("What's New", kind: .secondary, target: self, action: #selector(self.openReleasePage(_:)))
+            b.toolTip = r.pageURL.absoluteString
+            return b
+        }
+        if let r = updater.latest, r.build > BB1.build {
+            if case .failed(let message) = updater.state {
+                banner.show(title: "The update didn't finish", subtitle: message,
+                            actions: [whatsNew(r), PillButton("Try Again", kind: .primary, target: self, action: #selector(updateNow))])
+                return
+            }
+            let behind = dashboard.hostsBehind(r).map(\.label)
+            let also = behind.isEmpty ? "" : " · also updates \(ComputersPage.list(behind))"
+            banner.show(title: "\(r.title) is available", subtitle: "You have build \(BB1.build)\(also)",
+                        actions: [whatsNew(r), PillButton("Update", kind: .primary, target: self, action: #selector(updateNow))])
+            return
+        }
+        if let u = updater.justUpdated {
+            banner.show(.done, title: "bb1 is up to date", subtitle: "Updated from build \(u.from) to build \(u.to).",
+                        actions: [PillButton("OK", kind: .secondary, target: self, action: #selector(dismissUpdated))])
+            return
+        }
+        banner.isHidden = true
+    }
+
+    /// "A", "A and B", "A, B and C"
+    static func list(_ names: [String]) -> String {
+        names.count <= 1 ? names.joined() : names.dropLast().joined(separator: ", ") + " and " + names.last!
+    }
+
+    @objc private func updateNow() {
+        guard let r = Updater.shared.latest else { return }
+        dashboard?.updateEverything(r)
+    }
+
+    @objc private func openReleasePage(_ sender: NSButton) {
+        if let s = sender.toolTip, let url = URL(string: s) { NSWorkspace.shared.open(url) }
+    }
+
+    @objc private func dismissUpdated() {
+        Updater.shared.dismissJustUpdated()
     }
 
     // MARK: Cards
@@ -251,25 +374,43 @@ final class ComputersPage: NSView {
                         laptop: DeviceIdentity.name.contains("MacBook"), dimmed: !hosting, menu: nil, button: button)
     }
 
-    private func usesTailscale(_ e: HostDirectory.Entry) -> Bool {
+    private static func usesTailscale(_ e: HostDirectory.Entry) -> Bool {
         e.tailscaleIP != nil && (e.lan == nil || preferHome[e.name] != true)
     }
 
+    /// How to reach this Mac, honouring the Tailscale / home network choice.
+    static func target(for e: HostDirectory.Entry) -> ClientTarget? {
+        HostDirectory.target(for: e, preferTailscale: ComputersPage.usesTailscale(e))
+    }
+
     private func card(for e: HostDirectory.Entry, index: Int) -> NSView {
-        let target = HostDirectory.target(for: e, preferTailscale: usesTailscale(e))
+        let target = ComputersPage.target(for: e)
         let pairing: Bool = { if case .code? = target?.auth { return true }; return false }()
-        let status: String
-        if !e.online {
+        let phase = HostUpdates.shared.phases[e.name]
+        var status: String
+        var live = e.online
+        if let phase {
+            switch phase {
+            case .starting: status = "Starting update…"
+            case .downloading(let p): status = "Downloading update · \(Int(p * 100))%"
+            case .installing: status = "Installing update…"
+            case .restarting: status = "Restarting bb1…"
+            case .waiting: status = "Starting up…"
+            case .done(let build): status = "Updated to build \(build)"
+            case .failed(let why): status = "Update failed: \(why)"; live = false
+            }
+        } else if !e.online {
             status = "Offline"
         } else if target?.tailscaleIP != nil {
             status = e.known != nil ? "Online · Tailscale" : "On your Tailscale"
         } else {
             status = e.known != nil ? "Online · Home network" : "Not paired yet"
         }
-        let button = PillButton(!e.online ? "Offline" : pairing ? "Pair" : "Connect", kind: .primary,
+        let updating = phase.map { !$0.finished } ?? false
+        let button = PillButton(updating ? "Updating…" : !e.online ? "Offline" : pairing ? "Pair" : "Connect", kind: .primary,
                                 target: self, action: #selector(connectCard(_:)))
         button.tag = index
-        button.isEnabled = e.online && target != nil
+        button.isEnabled = e.online && target != nil && !updating
 
         let menuButton = NSButton(image: NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "More")!
             .withSymbolConfiguration(.init(pointSize: 13, weight: .semibold))!, target: self, action: #selector(showMenu(_:)))
@@ -277,12 +418,24 @@ final class ComputersPage: NSView {
         menuButton.contentTintColor = NSColor.white.withAlphaComponent(0.45)
         menuButton.tag = index
         let hasMenu = e.known != nil || (e.lan != nil && e.tailscaleIP != nil)
-        return makeCard(name: e.name, detail: nil, status: status, live: e.online, laptop: e.name.contains("MacBook"),
-                        dimmed: !e.online, menu: hasMenu ? menuButton : nil, button: button)
+        var badge: PillButton?
+        if !updating, e.online, let latest = Updater.shared.latest, let target,
+           let build = HostUpdates.shared.builds[e.name], build < latest.build, HostUpdates.canUpdate(target, build: build) {
+            let b = PillButton(phase == nil ? "Update" : "Retry Update", kind: .secondary, target: self, action: #selector(updateCard(_:)))
+            b.small = true
+            b.tag = index
+            b.toolTip = "\(e.name) has build \(build). Update it to \(latest.title.lowercasedFirst)."
+            badge = b
+        }
+        let card = makeCard(name: e.name, detail: nil, status: status, live: live, laptop: e.name.contains("MacBook"),
+                            dimmed: !e.online, menu: hasMenu ? menuButton : nil, button: button, badge: badge,
+                            progress: { if case .downloading(let p)? = phase { return p }; return nil }())
+        card.toolTip = phase.flatMap { if case .failed(let why) = $0 { return why }; return nil }
+        return card
     }
 
     private func makeCard(name: String, detail: String?, status: String, live: Bool, laptop: Bool, dimmed: Bool,
-                          menu: NSButton?, button: PillButton) -> NSView {
+                          menu: NSButton?, button: PillButton, badge: PillButton? = nil, progress: Double? = nil) -> NSView {
         let card = CardView(radius: 16)
         let art = NSImageView(image: ComputerArt.image(laptop: laptop, online: !dimmed))
         art.imageScaling = .scaleNone
@@ -304,6 +457,9 @@ final class ComputersPage: NSView {
             detailLabel = d
         }
         if let menu { views.append(menu) }
+        if let badge { views.append(badge) }
+        let bar = ProgressLine()
+        if let progress { bar.value = progress; views.append(bar) }
         for v in views { v.translatesAutoresizingMaskIntoConstraints = false; card.addSubview(v) }
         var c: [NSLayoutConstraint] = [
             art.centerXAnchor.constraint(equalTo: card.centerXAnchor),
@@ -328,6 +484,16 @@ final class ComputersPage: NSView {
         } else {
             c.append(statusLine.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 4))
         }
+        if let badge {
+            c += [badge.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
+                  badge.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12)]
+        }
+        if progress != nil {
+            c += [bar.leadingAnchor.constraint(equalTo: art.leadingAnchor, constant: 18),
+                  bar.trailingAnchor.constraint(equalTo: art.trailingAnchor, constant: -18),
+                  bar.topAnchor.constraint(equalTo: art.bottomAnchor, constant: 6),
+                  bar.heightAnchor.constraint(equalToConstant: 3)]
+        }
         if let menu {
             c += [menu.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
                   menu.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
@@ -345,9 +511,9 @@ final class ComputersPage: NSView {
         let menu = NSMenu()
         if e.lan != nil && e.tailscaleIP != nil {
             let ts = NSMenuItem(title: "Connect over Tailscale", action: #selector(useTailscale(_:)), keyEquivalent: "")
-            ts.state = usesTailscale(e) ? .on : .off
+            ts.state = ComputersPage.usesTailscale(e) ? .on : .off
             let home = NSMenuItem(title: "Connect over Home Network", action: #selector(useHome(_:)), keyEquivalent: "")
-            home.state = usesTailscale(e) ? .off : .on
+            home.state = ComputersPage.usesTailscale(e) ? .off : .on
             for item in [ts, home] { item.target = self; item.tag = sender.tag; menu.addItem(item) }
         }
         if e.known != nil {
@@ -362,13 +528,13 @@ final class ComputersPage: NSView {
 
     @objc private func useTailscale(_ sender: NSMenuItem) {
         guard sender.tag < entries.count else { return }
-        preferHome[entries[sender.tag].name] = false
+        ComputersPage.preferHome[entries[sender.tag].name] = false
         reload()
     }
 
     @objc private func useHome(_ sender: NSMenuItem) {
         guard sender.tag < entries.count else { return }
-        preferHome[entries[sender.tag].name] = true
+        ComputersPage.preferHome[entries[sender.tag].name] = true
         reload()
     }
 
@@ -378,10 +544,16 @@ final class ComputersPage: NSView {
         dashboard?.directory.rebuild()
     }
 
+    @objc private func updateCard(_ sender: NSButton) {
+        guard sender.tag < entries.count, let latest = Updater.shared.latest,
+              let target = ComputersPage.target(for: entries[sender.tag]) else { return }
+        HostUpdates.shared.update(target, to: latest.build)
+    }
+
     @objc private func connectCard(_ sender: NSButton) {
         guard sender.tag < entries.count else { return }
         let e = entries[sender.tag]
-        guard let target = HostDirectory.target(for: e, preferTailscale: usesTailscale(e)) else { return }
+        guard let target = HostDirectory.target(for: e, preferTailscale: ComputersPage.usesTailscale(e)) else { return }
         if case .code = target.auth { setMessage("A 6-digit code will appear on \(e.name)'s screen.") }
         dashboard?.delegate?.connect(target)
     }
@@ -455,6 +627,20 @@ final class SettingsPage: NSView {
         logText.drawsBackground = false
         logText.font = .monospacedSystemFont(ofSize: 10.5, weight: .regular)
         logText.textColor = .secondaryLabelColor
+        NotificationCenter.default.addObserver(self, selector: #selector(updatesChanged), name: Updater.changed, object: nil)
+    }
+
+    @objc private func updatesChanged() {
+        guard window != nil else { return }
+        reload()
+    }
+
+    @objc private func checkForUpdates() { Updater.shared.check(userInitiated: true) }
+
+    @objc private func updateNow() {
+        guard let r = Updater.shared.latest else { return }
+        dashboard?.show(.computers)
+        dashboard?.updateEverything(r)
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -500,8 +686,27 @@ final class SettingsPage: NSView {
             app.setStartsAtLogin($0)
         }
 
-        section("About")
-        addRow("bb1", "Version \(BB1.version)", nil)
+        section("Updates")
+        let updater = Updater.shared
+        var detail = "Version \(BB1.version) · build \(BB1.build)"
+        var control: NSView? = PillButton("Check for Updates", kind: .secondary, target: self, action: #selector(checkForUpdates))
+        switch updater.state {
+        case .idle: break
+        case .checking: detail += " · Checking…"; control = nil
+        case .upToDate: detail += " · Up to date"
+        case .available(let r):
+            detail += " · \(r.title) is available"
+            control = PillButton("Update", kind: .primary, target: self, action: #selector(updateNow))
+        case .downloading(_, let p): detail += " · Downloading update · \(Int(p * 100))%"; control = nil
+        case .installing, .restarting: detail += " · Installing update…"; control = nil
+        case .failed(let message): detail += " · \(message)"
+        }
+        if !updater.canUpdate { detail = "Version \(BB1.version) · development copy (updates work in the installed app)"; control = nil }
+        addRow("bb1", detail, control)
+        addSwitch("Include test builds", "Offer every test build as an update, not only releases.", s.testBuilds) { on in
+            app.updateSettings { $0.testBuilds = on }
+            Updater.shared.check()
+        }
 
         section("Diagnostics")
         addRow("Logs", "Everything both Macs report ends up in the sharing Mac's log.",

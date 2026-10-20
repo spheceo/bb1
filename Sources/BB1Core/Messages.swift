@@ -16,6 +16,11 @@ public struct ClientHello: Codable {
     /// "device" (remembered pairing), "tailscale", "code" (new pairing), "key" (old pairing key)
     public var mode: String?
     public var ecdhPub: Data?
+    // Added with self-update (older peers leave these out)
+    /// The app's build number.
+    public var appBuild: Int?
+    /// "update": not a streaming session, only for checking the host's build and updating it.
+    public var purpose: String?
 }
 
 public struct HostHello: Codable {
@@ -26,6 +31,20 @@ public struct HostHello: Codable {
     // Version 4
     public var hostId: String?
     public var ecdhPub: Data?
+    /// The app's build number (added with self-update).
+    public var appBuild: Int?
+}
+
+/// Host → client while the host updates itself.
+public struct UpdateStatusMsg: Codable {
+    /// "downloading", "installing", "restarting" or "failed"
+    public var phase: String
+    /// 0…1 while downloading
+    public var progress: Double?
+    public var detail: String?
+    public init(phase: String, progress: Double? = nil, detail: String? = nil) {
+        self.phase = phase; self.progress = progress; self.detail = detail
+    }
 }
 
 /// Host → client after a new pairing: remember this host with this secret from now on.
@@ -191,4 +210,9 @@ public enum ControlMessage: Codable {
     case cursor(CursorMsg)
     /// Client → host: Caps Lock is on/off on the client; match it.
     case capsLock(Bool)
+
+    // Self-update: only sent to peers that announced an appBuild
+    /// Client → host: download this build from GitHub, install it and restart.
+    case updateHost(build: Int)
+    case updateStatus(UpdateStatusMsg)
 }

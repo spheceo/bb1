@@ -27,4 +27,6 @@ Everything so far. This version stays frozen until the first release.
 - Fixed: two cursors on first connect when using this Mac's cursor. The setting could arrive while capture was starting, and got lost.
 - The host's capture-freeze check needs 3+ clicks or keys with no new frame for 4 s, so a single quiet click can't trigger it.
 - The app version is shown in Settings → About and logged at startup.
+- **Updates from inside the app:** bb1 checks GitHub every hour. When a newer build is out, a banner on Your Macs offers it; one click updates your other Macs that are behind (you see each one download, install, restart and come back on its card), then this Mac, which restarts into the new build. Settings → Updates shows the version and build, has Check for Updates, and "Include test builds". Downloads are only installed if they're signed with bb1's own certificate, so permissions carry over.
+- Fixed: opening Settings froze the app (builds 6 and 7).
 - **New look, matched to the icon:** flat, near-black greys (no gradients or shadows), white buttons and switches instead of system blue, and each Mac drawn with the bb1 mark on its screen (white when online, dim when offline or not shared).

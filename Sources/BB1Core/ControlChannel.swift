@@ -78,6 +78,10 @@ public final class ControlChannel {
     public private(set) var peerId = ""
     /// How this session was authenticated: "device", "tailscale", "code" or "key".
     public private(set) var authMode = "key"
+    /// The other side's app build, if it announced one (0 = an older bb1 that can't update remotely).
+    public private(set) var peerBuild = 0
+    /// Client: set before `start()`. Host: what the client said it connected for ("update", or nil to stream).
+    public var purpose: String?
     /// Client side: waiting for the user to type a pairing code (don't time out).
     public private(set) var awaitingCode = false
     public var onAuthenticated: ((SessionKeys) -> Void)?
@@ -111,7 +115,8 @@ public final class ControlChannel {
                     self.authMode = auth.mode
                     self.writePlain(.clientHello(ClientHello(version: BB1.protocolVersion, nonce: self.clientNonce, name: name,
                                                              deviceId: deviceId, mode: auth.mode,
-                                                             ecdhPub: eph.publicKey.rawRepresentation)))
+                                                             ecdhPub: eph.publicKey.rawRepresentation,
+                                                             appBuild: BB1.build, purpose: self.purpose)))
                 }
             case .waiting(let error):
                 self.close(.closed("can't reach host (\(error.localizedDescription))"))
@@ -229,6 +234,8 @@ public final class ControlChannel {
             hostNonce = Handshake.randomNonce()
             peerName = hello.name
             peerVersion = hello.version
+            peerBuild = hello.appBuild ?? 0
+            purpose = hello.purpose
             guard hello.version >= 4, let clientPub = hello.ecdhPub else {
                 // Version 1–3 client: the old pairing-key handshake.
                 authMode = "key"
@@ -269,6 +276,7 @@ public final class ControlChannel {
             hostNonce = hello.nonce
             peerName = hello.name
             peerVersion = hello.version
+            peerBuild = hello.appBuild ?? 0
             peerId = hello.hostId ?? ""
             guard hello.version >= 4, let hostPub = hello.ecdhPub, let eph = ephemeral,
                   let hostKey = try? Curve25519.KeyAgreement.PublicKey(rawRepresentation: hostPub),
@@ -351,7 +359,7 @@ public final class ControlChannel {
                                             hostId: hostId, mode: authMode)
         let proof = secret.isEmpty ? Data() : HandshakeV4.proof(secret: secret, side: "host", transcript: transcript)
         writePlain(.hostHello(HostHello(version: BB1.protocolVersion, nonce: hostNonce, proof: proof, name: name,
-                                        hostId: hostId, ecdhPub: eph.publicKey.rawRepresentation)))
+                                        hostId: hostId, ecdhPub: eph.publicKey.rawRepresentation, appBuild: BB1.build)))
     }
 
     private func install(_ k: SessionKeys, host: Bool) {

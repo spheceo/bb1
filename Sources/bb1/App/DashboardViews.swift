@@ -32,6 +32,8 @@ enum Style {
 final class PillButton: NSButton {
     enum Kind { case primary, secondary, link }
     var kind: Kind { didSet { restyle() } }
+    /// Compact size, for badges on cards.
+    var small = false { didSet { restyle(); invalidateIntrinsicContentSize() } }
     private var hovering = false { didSet { restyle() } }
     private var area: NSTrackingArea?
 
@@ -55,7 +57,8 @@ final class PillButton: NSButton {
 
     override var intrinsicContentSize: NSSize {
         let s = super.intrinsicContentSize
-        return kind == .link ? s : NSSize(width: s.width + 28, height: 32)
+        if kind == .link { return s }
+        return small ? NSSize(width: s.width + 18, height: 24) : NSSize(width: s.width + 28, height: 32)
     }
 
     override func layout() {
@@ -97,7 +100,7 @@ final class PillButton: NSButton {
         }
         attributedTitle = NSAttributedString(string: title, attributes: [
             .foregroundColor: color,
-            .font: NSFont.systemFont(ofSize: kind == .link ? 13 : 13.5, weight: kind == .link ? .semibold : .semibold),
+            .font: NSFont.systemFont(ofSize: kind == .link ? 13 : small ? 11.5 : 13.5, weight: .semibold),
         ])
     }
 }
@@ -106,7 +109,7 @@ final class PillButton: NSButton {
 class CardView: NSView {
     private var area: NSTrackingArea?
 
-    init(radius: CGFloat = 12) {
+    init(radius: CGFloat) {
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = radius
@@ -115,7 +118,9 @@ class CardView: NSView {
         layer?.borderColor = Style.cardBorder.cgColor
     }
 
-    override convenience init(frame: NSRect) { self.init() }
+    // `CardView()` lands here (NSObject's init calls init(frame:)). Must name the radius: a bare
+    // `self.init()` would call back into this initializer forever.
+    override convenience init(frame: NSRect) { self.init(radius: 12) }
 
     required init?(coder: NSCoder) { fatalError() }
 
@@ -358,4 +363,90 @@ enum ComputerArt {
         path.stroke()
         NSGraphicsContext.restoreGraphicsState()
     }
+}
+
+/// A thin progress bar: white on a faint track.
+final class ProgressLine: NSView {
+    var value: Double = 0 { didSet { needsDisplay = true } }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 3) }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let r = bounds.height / 2
+        NSColor.white.withAlphaComponent(0.08).setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: r, yRadius: r).fill()
+        let fill = NSRect(x: 0, y: 0, width: max(bounds.height, bounds.width * CGFloat(min(max(value, 0), 1))), height: bounds.height)
+        NSColor.white.withAlphaComponent(0.9).setFill()
+        NSBezierPath(roundedRect: fill, xRadius: r, yRadius: r).fill()
+    }
+}
+
+/// The strip under "Your Macs" that offers an update and shows its progress.
+final class UpdateBanner: CardView {
+    enum Icon { case mark, done }
+
+    private let iconView = NSImageView()
+    private let title = Style.label("", size: 13.5, weight: .semibold)
+    private let subtitle = Style.label("", size: 12, color: .secondaryLabelColor)
+    private let progress = ProgressLine()
+    private let actions = NSStackView()
+
+    init() {
+        super.init(radius: 14)
+        let tile = NSView()
+        tile.wantsLayer = true
+        tile.layer?.cornerRadius = 10
+        tile.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.06).cgColor
+        iconView.imageScaling = .scaleNone
+        let text = NSStackView(views: [title, subtitle])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 2
+        actions.spacing = 8
+        subtitle.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        for v in [tile, iconView, text, actions, progress] { v.translatesAutoresizingMaskIntoConstraints = false; addSubview(v) }
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: 66),
+            tile.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 15),
+            tile.centerYAnchor.constraint(equalTo: centerYAnchor),
+            tile.widthAnchor.constraint(equalToConstant: 38), tile.heightAnchor.constraint(equalToConstant: 38),
+            iconView.centerXAnchor.constraint(equalTo: tile.centerXAnchor),
+            iconView.centerYAnchor.constraint(equalTo: tile.centerYAnchor),
+            text.leadingAnchor.constraint(equalTo: tile.trailingAnchor, constant: 13),
+            text.centerYAnchor.constraint(equalTo: centerYAnchor),
+            text.trailingAnchor.constraint(lessThanOrEqualTo: actions.leadingAnchor, constant: -16),
+            actions.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -15),
+            actions.centerYAnchor.constraint(equalTo: centerYAnchor),
+            progress.leadingAnchor.constraint(equalTo: text.leadingAnchor),
+            progress.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
+            progress.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
+            progress.heightAnchor.constraint(equalToConstant: 3),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    func show(_ icon: Icon = .mark, title: String, subtitle: String, progress value: Double? = nil, actions views: [NSView] = []) {
+        isHidden = false
+        iconView.image = icon == .mark ? UpdateBanner.markImage
+            : NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 15, weight: .bold))
+        iconView.contentTintColor = .white
+        self.title.stringValue = title
+        self.subtitle.stringValue = subtitle
+        self.subtitle.toolTip = subtitle
+        progress.isHidden = value == nil
+        progress.value = value ?? 0
+        actions.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        views.forEach { actions.addArrangedSubview($0) }
+    }
+
+    private static let markImage = NSImage(size: NSSize(width: 20, height: 16), flipped: false) { rect in
+        ComputerArt.drawMark(in: rect.insetBy(dx: 0.5, dy: 0.5), opacity: 1)
+        return true
+    }
+}
+
+extension String {
+    /// "Test build 9" → "test build 9", for use mid-sentence.
+    var lowercasedFirst: String { prefix(1).lowercased() + dropFirst() }
 }

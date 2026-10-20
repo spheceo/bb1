@@ -6,6 +6,12 @@ public enum BB1 {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
     }
 
+    /// The build number (commit count, stamped into Info.plist as CFBundleVersion). Updates compare this.
+    /// 0 for `swift run`, which can't update itself.
+    public static var build: Int {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String).flatMap(Int.init) ?? 0
+    }
+
     /// 2: packet retransmission (NACK), client log forwarding, clipboard. 3: sound.
     /// 4: remembered pairings, Tailscale sign-in, 6-digit pairing codes, forward-secret key exchange.
     /// Hosts still accept version 1–3 clients (pairing key); newer features need both sides.

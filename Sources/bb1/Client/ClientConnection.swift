@@ -220,6 +220,10 @@ final class ClientConnection {
             guard let self, g == self.gen else { return }
             self.keys = keys
             self.lastPongUs = Clock.nowUs()
+            if let build = self.control?.peerBuild {
+                let host = self.target.label
+                DispatchQueue.main.async { HostUpdates.shared.note(build: build, for: host) }
+            }
         }
         channel.onMessage = { [weak self] message in
             guard let self, g == self.gen else { return }
