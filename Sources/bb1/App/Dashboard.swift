@@ -214,12 +214,7 @@ final class ComputersPage: NSView {
         titles.orientation = .vertical
         titles.alignment = .leading
         titles.spacing = 4
-        pill.isHidden = true
-        let corner = NSStackView(views: [pill, account])
-        corner.spacing = 10
-        corner.alignment = .centerY
-        corner.detachesHiddenViews = true
-        let header = NSStackView(views: [titles, NSView(), corner])
+        let header = NSStackView(views: [titles, NSView(), account])
         header.alignment = .top
         header.distribution = .fill
 
@@ -256,6 +251,15 @@ final class ComputersPage: NSView {
             column.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -20),
         ])
         scroll.setContentHuggingPriority(.init(1), for: .vertical)
+        // The update pill sits just left of the account chip, outside the header's layout,
+        // so showing and hiding it never moves anything.
+        pill.isHidden = true
+        pill.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(pill)
+        NSLayoutConstraint.activate([
+            pill.trailingAnchor.constraint(equalTo: account.leadingAnchor, constant: -10),
+            pill.centerYAnchor.constraint(equalTo: account.centerYAnchor),
+        ])
         for name in [Updater.changed, HostUpdates.changed] {
             NotificationCenter.default.addObserver(self, selector: #selector(updatesChanged), name: name, object: nil)
         }
@@ -289,6 +293,7 @@ final class ComputersPage: NSView {
     private func reloadPill() {
         guard let dashboard else { return }
         let updater = Updater.shared
+        if updater.justUpdated == nil { pill.alphaValue = 1 }
         switch updater.state {
         case .downloading(_, let p): pill.show(.busy(p), "Updating · \(Int(p * 100))%"); return
         case .installing: pill.show(.busy(1), "Installing…"); return
@@ -321,10 +326,28 @@ final class ComputersPage: NSView {
             return
         }
         if let u = updater.justUpdated {
-            pill.show(.done, "Updated to build \(u.to)", tooltip: "Updated from build \(u.from). Click to hide.")
+            pill.show(.done, "Updated to build \(u.to)", tooltip: "Updated from build \(u.from).")
+            fadeOutDonePill()
             return
         }
         pill.isHidden = true
+    }
+
+    private var doneFadeScheduled = false
+
+    /// "Updated to build N" stays for a few seconds once you can see it, then fades away.
+    private func fadeOutDonePill() {
+        guard !doneFadeScheduled, window?.isVisible == true else { return }
+        doneFadeScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
+            guard let self, Updater.shared.justUpdated != nil else { return }
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = 0.6
+                self.pill.animator().alphaValue = 0
+            }, completionHandler: {
+                Updater.shared.dismissJustUpdated()
+            })
+        }
     }
 
     @objc private func pillClicked() {
