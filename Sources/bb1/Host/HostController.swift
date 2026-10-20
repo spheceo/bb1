@@ -217,7 +217,12 @@ final class HostController {
     private(set) var session: HostSession?
     private var nextSessionId = UInt32.random(in: 1...UInt32.max / 2)
     private var lastPointerUs: UInt64 = 0
-    private var lastInputUs: UInt64 = 0
+    /// Times of recent clicks and key presses (for the capture check).
+    private var recentInputUs: [UInt64] = []
+    private func noteInput() {
+        recentInputUs.append(Clock.nowUs())
+        if recentInputUs.count > 20 { recentInputUs.removeFirst(recentInputUs.count - 20) }
+    }
     private var watchdog: DispatchSourceTimer?
     private var activity: NSObjectProtocol?
     private var displayDebounce: DispatchWorkItem?
@@ -635,14 +640,14 @@ final class HostController {
         case .requestKeyframe(let reason):
             pipeline.requestKeyframe("client: \(reason)")
         case .key(let k):
-            if k.down { input.keys += 1; lastInputUs = Clock.nowUs() }
+            if k.down { input.keys += 1; noteInput() }
             injector.key(k)
         case .mouseMove(let m):
             input.moves += 1
             // Only a real cursor move should produce a new frame; without Accessibility nothing moves.
             if injector.move(m) && HostController.hasAccessibility { lastPointerUs = Clock.nowUs() }
         case .mouseButton(let b):
-            if b.down { input.clicks += 1; lastInputUs = Clock.nowUs() }
+            if b.down { input.clicks += 1; noteInput() }
             injector.button(b)
         case .scroll(let sc):
             input.scrolls += 1
@@ -731,7 +736,7 @@ final class HostController {
                 self.endSession("no heartbeat from the client for 3 s")
                 return
             }
-            self.pipeline.checkHealth(lastPointerUs: self.lastPointerUs, lastInputUs: self.lastInputUs)
+            self.pipeline.checkHealth(lastPointerUs: self.lastPointerUs, recentInputUs: self.recentInputUs)
         }
         timer.resume()
         watchdog = timer

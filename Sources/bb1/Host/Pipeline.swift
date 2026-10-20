@@ -151,7 +151,7 @@ final class StreamPipeline {
     }
 
     /// Called every 250 ms by the host. `lastPointerUs` is when pointer input last arrived.
-    func checkHealth(lastPointerUs: UInt64, lastInputUs: UInt64 = 0) {
+    func checkHealth(lastPointerUs: UInt64, recentInputUs: [UInt64] = []) {
         queue.async {
             guard self.running, self.source != nil, self.encoder != nil else { return }
             let now = Clock.nowUs()
@@ -164,10 +164,11 @@ final class StreamPipeline {
                 self.restartCapture("capture stalled after input")
                 return
             }
-            // Without the cursor in the video, use clicks and keys instead: they nearly always change
-            // something on screen. 3 s with input and no frame at all → restart capture (it's invisible).
+            // Without the cursor in the video, use clicks and keys instead. One click can easily change
+            // nothing, so it takes 3+ inputs and 4 s without a single new frame → restart capture (invisible).
+            let unanswered = recentInputUs.filter { $0 > c.lastCaptureUs }
             if !self.settings.showsCursor, !self.settings.synthetic,
-               lastInputUs > c.lastCaptureUs, now - lastInputUs > 3_000_000, now - lastInputUs < 10_000_000,
+               unanswered.count >= 3, let first = unanswered.min(), now - first > 4_000_000,
                now - self.captureStartedUs > 5_000_000, now - self.lastCaptureRestartUs > 10_000_000,
                now - self.encoderCreatedUs > 2_000_000 {
                 self.restartCapture("capture silent after input")
