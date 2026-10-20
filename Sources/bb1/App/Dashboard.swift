@@ -13,6 +13,7 @@ protocol DashboardDelegate: AnyObject {
     var startsAtLogin: Bool { get }
     func setStartsAtLogin(_ on: Bool)
     func refreshDock()
+    func removeFromThisMac()
 }
 
 /// bb1's main window, laid out like Parsec: an icon sidebar and two pages, Computers and Settings.
@@ -635,6 +636,16 @@ final class SettingsPage: NSView {
         reload()
     }
 
+    @objc private func removeApp() {
+        let alert = NSAlert()
+        alert.messageText = "Remove bb1 from this Mac?"
+        alert.informativeText = "bb1 quits, stops starting at login, and moves to the Trash. Your other Macs can't connect to this one until you install it again."
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        dashboard?.delegate?.removeFromThisMac()
+    }
+
     @objc private func checkForUpdates() { Updater.shared.check(userInitiated: true) }
 
     @objc private func updateNow() {
@@ -684,6 +695,11 @@ final class SettingsPage: NSView {
         }
         addSwitch("Open at login", "Start bb1 when you log in, so this Mac can be reached after a restart.", app.startsAtLogin) {
             app.setStartsAtLogin($0)
+        }
+
+        if Installer.isInstalledApp {
+            addRow("Remove bb1", "Quit, stop starting at login and move the app to the Trash. Pairings are kept.",
+                   PillButton("Remove…", kind: .secondary, target: self, action: #selector(removeApp)))
         }
 
         section("Updates")

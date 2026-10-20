@@ -6,7 +6,8 @@ offered in the app when "Include test builds" is on.
 
 ## Test builds since v0.0.0
 
-Nothing yet.
+- **Installs from a disk image:** a designed `.dmg` (dark, like the app) where you drag bb1 into Applications. The zip stays for in-app updates.
+- **No more install scripts:** bb1 sets itself up. Opened from the disk image or Downloads, it offers to move into Applications. A new copy quits older ones, points the login item at itself and puts the old `~/Applications` copy in the Trash. Turning on Share This Mac also turns on start at login (with restart after a crash). Settings → Remove bb1 takes it off the Mac. `install-host.sh` and `uninstall-host.sh` are gone.
 
 ## v0.0.0 — 2026-10-20 (first release)
 

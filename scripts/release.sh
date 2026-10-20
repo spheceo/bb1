@@ -1,10 +1,11 @@
 #!/bin/zsh
-# Builds a signed bb1.app and zips it.
+# Builds a signed bb1.app, a drag-to-Applications disk image (.dmg, for installing by hand) and a
+# zip (what the in-app updater downloads).
 #
-#   scripts/release.sh             test build:  dist/bb1-<VERSION>-build<N>.zip  (N = commit count)
+#   scripts/release.sh             test build:  dist/bb1-<VERSION>-build<N>.{dmg,zip}  (N = commit count)
 #   scripts/release.sh --publish   test build, published as a GitHub pre-release (tag build-<N>);
 #                                  the app offers it as an update when "Include test builds" is on
-#   scripts/release.sh --release   real release: dist/bb1-v<VERSION>-build<N>.zip, tag v<VERSION>,
+#   scripts/release.sh --release   real release: dist/bb1-v<VERSION>-build<N>.{dmg,zip}, tag v<VERSION>,
 #                                  published as a GitHub release
 #
 # The app finds updates by the zip's name on github.com/spheceo/bb1 releases, so keep the
@@ -44,6 +45,8 @@ fi
 rm -f "$zip"
 ditto -c -k --keepParent build/bb1.app "$zip"
 echo "==> $zip ($(du -h "$zip" | cut -f1))"
+dmg="${zip%.zip}.dmg"
+scripts/make-dmg.sh "$dmg"
 
 if [[ "$mode" == "--release" || "$mode" == "--publish" ]]; then
   # What changed since the last published build.
@@ -54,9 +57,11 @@ if [[ "$mode" == "--release" || "$mode" == "--publish" ]]; then
   git tag "$tag"
   git push -q origin "$tag"
   if [[ "$mode" == "--release" ]]; then
-    gh release create "$tag" "$zip" --title "bb1 $version" --notes "$notes" --latest
+    gh release create "$tag" "$dmg" "$zip" --title "bb1 $version" --latest --notes "Download the .dmg, open it and drag bb1 into Applications. Installed copies update themselves.
+
+$notes"
   else
-    gh release create "$tag" "$zip" --title "Test build $build" --prerelease --notes "Test build $build (version $version).
+    gh release create "$tag" "$dmg" "$zip" --title "Test build $build" --prerelease --notes "Test build $build (version $version). Installed copies with test builds turned on update themselves.
 
 $notes"
   fi

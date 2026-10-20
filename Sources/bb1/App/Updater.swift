@@ -282,7 +282,7 @@ final class Updater {
         }
     }
 
-    private static func spawnDetached(_ args: [String]) throws {
+    static func spawnDetached(_ args: [String]) throws {
         var attr = posix_spawnattr_t(nil as OpaquePointer?)
         posix_spawnattr_init(&attr)
         defer { posix_spawnattr_destroy(&attr) }

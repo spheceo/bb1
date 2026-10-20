@@ -26,9 +26,9 @@ bb1/
     Client-Info.plist
   scripts/
     bundle.sh       wraps a built binary into a signed .app
-    install-host.sh copies BB1.app to ~/Applications (Host mode), installs the LaunchAgent
-  launchd/
-    com.bb1.host.plist
+    release.sh      .app → .dmg (install by hand) + .zip (in-app updates); --publish / --release put them on GitHub
+    make-dmg.sh     the drag-to-Applications disk image (dmgbuild + make-dmg-background.swift)
+    install.sh      development: build, install into /Applications, open
   docs/
 ```
 
@@ -71,14 +71,11 @@ macOS attributes permissions to the terminal app here, so grant Screen Recording
 
 **Daily use:**
 
-```sh
-scripts/bundle.sh           # swift build -c release → BB1.app → codesign
-scripts/install-host.sh     # copy to ~/Applications, load the LaunchAgent
-```
+Install from the `.dmg` (drag to Applications), or from source with `scripts/install.sh`. The app sets itself up: it offers to move into Applications if opened from the disk image, quits older copies, and writes the login item (`~/Library/LaunchAgents/com.bb1.host.plist`, start at login + restart after a crash) when you share the Mac. Settings → Remove bb1 undoes it.
 
 Permissions are granted once to `BB1.app` (bundle ID `com.bb1.host`, kept from the old host app). Because every build is signed with the same certificate, they survive rebuilds.
 
-Don't open the apps straight from `build/`. `~/Documents` is a privacy-protected folder, and a signed app inside it hangs at launch waiting for permission to read its own files. `install-host.sh` copies the host to `~/Applications`, and the client goes to `/Applications` on the M4.
+Don't open the apps straight from `build/`. `~/Documents` is a privacy-protected folder, and a signed app inside it hangs at launch waiting for permission to read its own files. Both Macs keep bb1 in `/Applications`.
 
 An `.app` is just a folder (`BB1.app/Contents/MacOS/bb1` + `Contents/Info.plist`). `bundle.sh` makes it with `mkdir` and `cp` and then signs it. No Xcode project.
 

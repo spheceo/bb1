@@ -38,8 +38,7 @@ bb1/
     BB1Core/      protocol, crypto, transport, clipboard sync (shared)
     bb1/          the app: App/ (menu bar, modes, settings), Host/ (capture, encode, input), Client/ (decode, display, input)
     bb1-selftest/ protocol and crypto checks (swift run bb1-selftest)
-  scripts/        signed .app bundles, host install/uninstall, recovery test
-  launchd/        LaunchAgent that starts the host at login and restarts it on crash
+  scripts/        signed .app, .dmg and update zip; dev install; recovery and sign-in tests
   docs/
 ```
 

@@ -28,23 +28,18 @@ That's what this round of testing is for.
 
 ## 1. The host (the M1)
 
-Already installed: **bb1.app** in `~/Applications`, in **Host** mode, started at login and restarted if it crashes. Screen Recording and Accessibility are allowed.
+Install it like any Mac app: open the latest **bb1-….dmg** and drag **bb1** into Applications. Open it and turn on **Share This Mac**. bb1 then starts at login and restarts itself if it crashes. Allow Screen Recording and Accessibility when asked.
 
-To reinstall after code changes:
+Opening a new bb1 quits an older copy, moves the login item over to the new copy, and puts the old `~/Applications/bb1.app` in the Trash. After that, updates arrive inside the app.
 
-```sh
-cd ~/Documents/code/bb1
-scripts/install-host.sh
-```
-
-Don't double-click the app inside `build/`: macOS blocks signed apps launched from inside `~/Documents`.
+From source: `scripts/install.sh` (builds, installs into /Applications and opens it). Don't double-click the app inside `build/`: macOS blocks signed apps launched from inside `~/Documents`.
 
 ## 2. The client (the M4)
 
-1. The latest `bb1.zip` is sent over Tailscale and lands in **Downloads**. Unzip it.
-2. Quit any old **BB1 Client**, delete it from Applications, and drag **bb1.app** in.
-3. In Terminal: `xattr -dr com.apple.quarantine /Applications/bb1.app` (it isn't notarized yet).
-4. Open bb1. The **Computers** page lists your Macs. There's no mode to pick: any Mac can connect, and **Share This Mac** turns on sharing.
+1. The latest **bb1-….dmg** is sent over Tailscale and lands in **Downloads**. Open it.
+2. Quit bb1 if it's running, and drag **bb1** onto **Applications** (replace the old one).
+3. Open bb1 from Applications. It isn't signed by Apple yet, so the first time macOS may refuse: System Settings → Privacy & Security → **Open Anyway**. Updates after that install without asking.
+4. The **Computers** page lists your Macs. There's no mode to pick: any Mac can connect, and **Share This Mac** turns on sharing.
 
 ## 3. Connect
 

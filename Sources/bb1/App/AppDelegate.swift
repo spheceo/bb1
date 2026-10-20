@@ -83,14 +83,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dashbo
     }
 
     /// Started by launchd at login (no window then), or opened by the user.
-    private var launchedAtLogin: Bool { ProcessInfo.processInfo.environment["XPC_SERVICE_NAME"] == "com.bb1.host" }
+    private var launchedAtLogin: Bool { Installer.launchedByLaunchd }
 
     var isHosting: Bool { hostRole != nil }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let hosting = forcedMode.map { $0 == .host } ?? settings.isHosting
         Log.setup(hosting ? "host" : "client")
-        Log.info("app: starting bb1 v\(BB1.version)\(hosting ? ", sharing this Mac" : "")")
+        Log.info("app: starting bb1 v\(BB1.version) (build \(BB1.build))\(hosting ? ", sharing this Mac" : "")")
+        if Installer.offerMoveIfNeeded() { return }
+        Installer.takeOver()
         buildMainMenu()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
@@ -147,6 +149,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dashbo
         if on == isHosting { return }
         if on {
             updateSettings { $0.hosting = true }
+            // A shared Mac has to come back after a restart (and after a crash).
+            if Installer.isInstalledApp && !LoginItem.isOn { LoginItem.set(true) }
             Log.setup("host")
             startHost()
         } else {
@@ -176,31 +180,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dashbo
         role.start()
     }
 
-    private static var loginAgentURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/LaunchAgents/com.bb1.host.plist")
-    }
+    var startsAtLogin: Bool { LoginItem.isOn }
 
-    var startsAtLogin: Bool { FileManager.default.fileExists(atPath: AppDelegate.loginAgentURL.path) }
+    func setStartsAtLogin(_ on: Bool) { LoginItem.set(on) }
 
-    /// Writes or removes the login item. It takes effect at the next login (loading it now would start a second copy).
-    func setStartsAtLogin(_ on: Bool) {
-        let url = AppDelegate.loginAgentURL
-        guard on else {
-            try? FileManager.default.removeItem(at: url)
-            return
-        }
-        guard let exe = Bundle.main.executablePath else { return }
-        let plist: [String: Any] = [
-            "Label": "com.bb1.host",
-            "ProgramArguments": [exe],
-            "RunAtLoad": true,
-            "KeepAlive": ["SuccessfulExit": false],
-            "ThrottleInterval": 3,
-            "LimitLoadToSessionType": "Aqua",
-            "ProcessType": "Interactive",
-        ]
-        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        (plist as NSDictionary).write(to: url, atomically: true)
+    func removeFromThisMac() {
+        hostRole?.stop()
+        Installer.removeFromThisMac()
     }
 
     // MARK: Menu bar
