@@ -90,6 +90,7 @@ final class Dashboard: NSObject, NSWindowDelegate {
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(nil)
         NSApp.activate(ignoringOtherApps: true)
+        Updater.shared.checkIfStale()
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refresh() }
     }
@@ -186,7 +187,7 @@ final class ComputersPage: NSView {
     private weak var dashboard: Dashboard?
     private let flow = FlowView()
     private let account = AccountChip()
-    private let banner = UpdateBanner()
+    private lazy var pill = UpdatePill(target: self, action: #selector(pillClicked))
     private let message = Style.label("", size: 12, color: .secondaryLabelColor)
     private var entries: [HostDirectory.Entry] = []
     /// Per Mac: connect over the home network instead of Tailscale (Tailscale is the default).
@@ -213,7 +214,12 @@ final class ComputersPage: NSView {
         titles.orientation = .vertical
         titles.alignment = .leading
         titles.spacing = 4
-        let header = NSStackView(views: [titles, NSView(), account])
+        pill.isHidden = true
+        let corner = NSStackView(views: [pill, account])
+        corner.spacing = 10
+        corner.alignment = .centerY
+        corner.detachesHiddenViews = true
+        let header = NSStackView(views: [titles, NSView(), corner])
         header.alignment = .top
         header.distribution = .fill
 
@@ -236,15 +242,13 @@ final class ComputersPage: NSView {
             doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
         ])
 
-        banner.isHidden = true
-        let column = NSStackView(views: [header, banner, scroll, message])
-        column.detachesHiddenViews = true
+        let column = NSStackView(views: [header, scroll, message])
         column.orientation = .vertical
         column.alignment = .leading
         column.spacing = 26
         column.translatesAutoresizingMaskIntoConstraints = false
         addSubview(column)
-        for v in [header, banner, scroll] as [NSView] { v.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
+        for v in [header, scroll] as [NSView] { v.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
         NSLayoutConstraint.activate([
             column.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 44),
             column.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -44),
@@ -277,24 +281,21 @@ final class ComputersPage: NSView {
         for e in entries where e.online {
             if let target = ComputersPage.target(for: e) { HostUpdates.shared.refresh(target) }
         }
-        reloadBanner()
+        reloadPill()
     }
 
-    // MARK: Update banner
+    // MARK: Update pill
 
-    private func reloadBanner() {
+    private func reloadPill() {
         guard let dashboard else { return }
         let updater = Updater.shared
-        func busy(_ r: AppRelease, _ step: String, _ p: Double) {
-            banner.show(title: "Updating to \(r.title.lowercasedFirst)…", subtitle: step, progress: p)
-        }
         switch updater.state {
-        case .downloading(let r, let p): busy(r, "Downloading · \(Int(p * 100))%", p); return
-        case .installing(let r): busy(r, "Installing…", 1); return
-        case .restarting(let r): busy(r, "Restarting bb1…", 1); return
+        case .downloading(_, let p): pill.show(.busy(p), "Updating · \(Int(p * 100))%"); return
+        case .installing: pill.show(.busy(1), "Installing…"); return
+        case .restarting: pill.show(.busy(1), "Restarting bb1…"); return
         default: break
         }
-        if let r = dashboard.pendingRelease, !dashboard.updatingHosts.isEmpty {
+        if !dashboard.updatingHosts.isEmpty {
             let names = dashboard.updatingHosts.sorted()
             let progress = names.map { name -> Double in
                 switch HostUpdates.shared.phases[name] {
@@ -305,51 +306,40 @@ final class ComputersPage: NSView {
                 default: return 0
                 }
             }.reduce(0, +) / Double(names.count)
-            let then = r.build > BB1.build ? ", then this Mac" : ""
-            busy(r, "Updating \(ComputersPage.list(names)) first\(then)", progress)
+            pill.show(.busy(progress), "Updating \(ComputersPage.list(names)) · \(Int(progress * 100))%",
+                      tooltip: "Your other Macs update first, then this one.")
             return
-        }
-        let whatsNew = { (r: AppRelease) -> PillButton in
-            let b = PillButton("What's New", kind: .secondary, target: self, action: #selector(self.openReleasePage(_:)))
-            b.toolTip = r.pageURL.absoluteString
-            return b
         }
         if let r = updater.latest, r.build > BB1.build {
             if case .failed(let message) = updater.state {
-                banner.show(title: "The update didn't finish", subtitle: message,
-                            actions: [whatsNew(r), PillButton("Try Again", kind: .primary, target: self, action: #selector(updateNow))])
+                pill.show(.failed, "Update failed · Try again", tooltip: message)
                 return
             }
             let behind = dashboard.hostsBehind(r).map(\.label)
-            let also = behind.isEmpty ? "" : " · also updates \(ComputersPage.list(behind))"
-            banner.show(title: "\(r.title) is available", subtitle: "You have build \(BB1.build)\(also)",
-                        actions: [whatsNew(r), PillButton("Update", kind: .primary, target: self, action: #selector(updateNow))])
+            let also = behind.isEmpty ? "" : " Also updates \(ComputersPage.list(behind))."
+            pill.show(.offer, "Update to \(r.shortName)", tooltip: "You have build \(BB1.build).\(also)")
             return
         }
         if let u = updater.justUpdated {
-            banner.show(.done, title: "bb1 is up to date", subtitle: "Updated from build \(u.from) to build \(u.to).",
-                        actions: [PillButton("OK", kind: .secondary, target: self, action: #selector(dismissUpdated))])
+            pill.show(.done, "Updated to build \(u.to)", tooltip: "Updated from build \(u.from). Click to hide.")
             return
         }
-        banner.isHidden = true
+        pill.isHidden = true
+    }
+
+    @objc private func pillClicked() {
+        let updater = Updater.shared
+        if updater.state.busy || !(dashboard?.updatingHosts.isEmpty ?? true) { return }
+        if let r = updater.latest, r.build > BB1.build {
+            dashboard?.updateEverything(r)
+        } else if updater.justUpdated != nil {
+            updater.dismissJustUpdated()
+        }
     }
 
     /// "A", "A and B", "A, B and C"
     static func list(_ names: [String]) -> String {
         names.count <= 1 ? names.joined() : names.dropLast().joined(separator: ", ") + " and " + names.last!
-    }
-
-    @objc private func updateNow() {
-        guard let r = Updater.shared.latest else { return }
-        dashboard?.updateEverything(r)
-    }
-
-    @objc private func openReleasePage(_ sender: NSButton) {
-        if let s = sender.toolTip, let url = URL(string: s) { NSWorkspace.shared.open(url) }
-    }
-
-    @objc private func dismissUpdated() {
-        Updater.shared.dismissJustUpdated()
     }
 
     // MARK: Cards

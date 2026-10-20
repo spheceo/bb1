@@ -380,69 +380,107 @@ final class ProgressLine: NSView {
     }
 }
 
-/// The strip under "Your Macs" that offers an update and shows its progress.
-final class UpdateBanner: CardView {
-    enum Icon { case mark, done }
+/// The pill in the "Your Macs" header: offers a newer build, then shows the update's progress inside itself.
+final class UpdatePill: NSButton {
+    enum Look: Equatable { case offer, busy(Double), done, failed }
 
-    private let iconView = NSImageView()
-    private let title = Style.label("", size: 13.5, weight: .semibold)
-    private let subtitle = Style.label("", size: 12, color: .secondaryLabelColor)
-    private let progress = ProgressLine()
-    private let actions = NSStackView()
+    private var look: Look = .offer
+    private var text = ""
+    private var hovering = false
+    private var area: NSTrackingArea?
+    private let fill = CALayer()
 
-    init() {
-        super.init(radius: 14)
-        let tile = NSView()
-        tile.wantsLayer = true
-        tile.layer?.cornerRadius = 10
-        tile.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.06).cgColor
-        iconView.imageScaling = .scaleNone
-        let text = NSStackView(views: [title, subtitle])
-        text.orientation = .vertical
-        text.alignment = .leading
-        text.spacing = 2
-        actions.spacing = 8
-        subtitle.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        for v in [tile, iconView, text, actions, progress] { v.translatesAutoresizingMaskIntoConstraints = false; addSubview(v) }
-        NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: 66),
-            tile.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 15),
-            tile.centerYAnchor.constraint(equalTo: centerYAnchor),
-            tile.widthAnchor.constraint(equalToConstant: 38), tile.heightAnchor.constraint(equalToConstant: 38),
-            iconView.centerXAnchor.constraint(equalTo: tile.centerXAnchor),
-            iconView.centerYAnchor.constraint(equalTo: tile.centerYAnchor),
-            text.leadingAnchor.constraint(equalTo: tile.trailingAnchor, constant: 13),
-            text.centerYAnchor.constraint(equalTo: centerYAnchor),
-            text.trailingAnchor.constraint(lessThanOrEqualTo: actions.leadingAnchor, constant: -16),
-            actions.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -15),
-            actions.centerYAnchor.constraint(equalTo: centerYAnchor),
-            progress.leadingAnchor.constraint(equalTo: text.leadingAnchor),
-            progress.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
-            progress.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
-            progress.heightAnchor.constraint(equalToConstant: 3),
-        ])
+    init(target: AnyObject, action: Selector) {
+        super.init(frame: .zero)
+        self.target = target
+        self.action = action
+        isBordered = false
+        focusRingType = .none
+        imagePosition = .imageLeading
+        imageHugsTitle = true
+        wantsLayer = true
+        layer?.cornerRadius = 15
+        layer?.masksToBounds = true
+        layer?.borderWidth = 1
+        fill.backgroundColor = NSColor.white.withAlphaComponent(0.14).cgColor
+        layer?.insertSublayer(fill, at: 0)
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func show(_ icon: Icon = .mark, title: String, subtitle: String, progress value: Double? = nil, actions views: [NSView] = []) {
+    func show(_ look: Look, _ text: String, tooltip: String? = nil) {
         isHidden = false
-        iconView.image = icon == .mark ? UpdateBanner.markImage
-            : NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 15, weight: .bold))
-        iconView.contentTintColor = .white
-        self.title.stringValue = title
-        self.subtitle.stringValue = subtitle
-        self.subtitle.toolTip = subtitle
-        progress.isHidden = value == nil
-        progress.value = value ?? 0
-        actions.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        views.forEach { actions.addArrangedSubview($0) }
+        self.look = look
+        self.text = text
+        toolTip = tooltip
+        restyle()
+        invalidateIntrinsicContentSize()
+        needsLayout = true
     }
 
-    private static let markImage = NSImage(size: NSSize(width: 20, height: 16), flipped: false) { rect in
-        ComputerArt.drawMark(in: rect.insetBy(dx: 0.5, dy: 0.5), opacity: 1)
-        return true
+    override var intrinsicContentSize: NSSize {
+        let s = super.intrinsicContentSize
+        return NSSize(width: s.width + 26, height: 30)
+    }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if case .busy(let p) = look {
+            fill.frame = NSRect(x: 0, y: 0, width: bounds.width * CGFloat(min(max(p, 0), 1)), height: bounds.height)
+        } else {
+            fill.frame = .zero
+        }
+        CATransaction.commit()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let area { removeTrackingArea(area) }
+        let a = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+        addTrackingArea(a)
+        area = a
+    }
+
+    override func mouseEntered(with event: NSEvent) { hovering = true; restyle() }
+    override func mouseExited(with event: NSEvent) { hovering = false; restyle() }
+    override func resetCursorRects() {
+        if case .busy = look { return }
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
+    private func restyle() {
+        let fg: NSColor
+        let symbol: String?
+        switch look {
+        case .offer:
+            layer?.backgroundColor = NSColor(white: hovering ? 0.84 : 0.95, alpha: 1).cgColor
+            layer?.borderColor = NSColor.clear.cgColor
+            fg = Style.ink
+            symbol = "arrow.down.circle.fill"
+        case .busy:
+            layer?.backgroundColor = NSColor.white.withAlphaComponent(0.06).cgColor
+            layer?.borderColor = NSColor.white.withAlphaComponent(0.1).cgColor
+            fg = .white
+            symbol = nil
+        case .done:
+            layer?.backgroundColor = NSColor.white.withAlphaComponent(hovering ? 0.1 : 0.06).cgColor
+            layer?.borderColor = NSColor.white.withAlphaComponent(0.1).cgColor
+            fg = NSColor.white.withAlphaComponent(0.85)
+            symbol = "checkmark"
+        case .failed:
+            layer?.backgroundColor = NSColor.white.withAlphaComponent(hovering ? 0.1 : 0.06).cgColor
+            layer?.borderColor = NSColor.white.withAlphaComponent(0.18).cgColor
+            fg = .white
+            symbol = "exclamationmark.circle"
+        }
+        image = symbol.flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 12.5, weight: .semibold)) }
+        contentTintColor = fg
+        attributedTitle = NSAttributedString(string: text, attributes: [
+            .foregroundColor: fg, .font: NSFont.systemFont(ofSize: 12.5, weight: .semibold),
+        ])
     }
 }
 

@@ -6,6 +6,7 @@ offered in the app when "Include test builds" is on.
 
 ## Test builds since v0.0.0
 
+- **Update pill:** a new build shows up by itself as a pill in the Your Macs header ("Update to build 13"). Click it to update; the pill shows the progress, then "Updated to build 13". bb1 checks every 5 minutes and whenever you bring it to the front (no need for Check for Updates).
 - **Installs from a disk image:** a `.dmg` whose window is the bb1 mark (half light, half graphite); an arc carries bb1 across the split into Applications. The zip stays for in-app updates.
 - **No more install scripts:** bb1 sets itself up. Opened from the disk image or Downloads, it offers to move into Applications. A new copy quits older ones, points the login item at itself and puts the old `~/Applications` copy in the Trash. Turning on Share This Mac also turns on start at login (with restart after a crash). Settings → Remove bb1 takes it off the Mac. `install-host.sh` and `uninstall-host.sh` are gone.
 

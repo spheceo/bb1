@@ -12,6 +12,8 @@ struct AppRelease: Equatable {
     var size: Int
 
     var title: String { isTest ? "Test build \(build)" : "bb1 \(version)" }
+    /// "build 13" for a test build, "0.0.1" for a release ("Update to …").
+    var shortName: String { isTest ? "build \(build)" : version }
 }
 
 struct UpdateError: LocalizedError {
@@ -72,7 +74,19 @@ final class Updater {
         }
         guard canUpdate, timer == nil else { return }
         check()
-        timer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in self?.check() }
+        // GitHub answers "nothing changed" (304) to a repeat request without counting it against the
+        // hourly limit, so checking often is cheap.
+        timer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in self?.check() }
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.checkIfStale()
+        }
+    }
+
+    /// Check again if the last check was over a minute ago (when bb1 comes to the front).
+    func checkIfStale() {
+        guard canUpdate else { return }
+        if let lastChecked, Date().timeIntervalSince(lastChecked) < 60 { return }
+        check()
     }
 
     /// Ask GitHub for the newest build. `userInitiated` shows "Checking…" and any error.
@@ -296,6 +310,9 @@ final class Updater {
 
     // MARK: GitHub
 
+    /// The last answer from GitHub and its ETag, so a repeat request can be answered with 304.
+    private static var cached: (etag: String, releases: [AppRelease])?
+
     /// All published builds, newest first. Callback on the main thread.
     static func fetchReleases(_ done: @escaping (Result<[AppRelease], Error>) -> Void) {
         let feed = ProcessInfo.processInfo.environment["BB1_UPDATE_FEED"] ?? "https://api.github.com/repos/\(repo)/releases?per_page=30"
@@ -304,16 +321,26 @@ final class Updater {
         request.setValue("bb1/\(BB1.version) (build \(BB1.build))", forHTTPHeaderField: "User-Agent")
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.timeoutInterval = 20
+        let cached = Updater.cached
+        if let cached { request.setValue(cached.etag, forHTTPHeaderField: "If-None-Match") }
         URLSession.shared.dataTask(with: request) { data, response, error in
+            let http = response as? HTTPURLResponse
             let result: Result<[AppRelease], Error>
             if let error {
                 result = .failure(error)
+            } else if http?.statusCode == 304, let cached {
+                result = .success(cached.releases)
             } else if let http = response as? HTTPURLResponse, http.statusCode != 200, request.url?.isFileURL == false {
                 result = .failure(UpdateError("GitHub answered \(http.statusCode)"))
             } else {
                 result = Result { try parse(data ?? Data()) }
             }
-            DispatchQueue.main.async { done(result) }
+            DispatchQueue.main.async {
+                if case .success(let releases) = result, let etag = http?.value(forHTTPHeaderField: "ETag") {
+                    Updater.cached = (etag, releases)
+                }
+                done(result)
+            }
         }.resume()
     }
 
