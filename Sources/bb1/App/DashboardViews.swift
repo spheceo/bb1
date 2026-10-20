@@ -417,7 +417,6 @@ final class MacTile: NSView {
         layer?.borderColor = Style.cardBorder.cgColor
 
         screen.wantsLayer = true
-        screen.layerUsesCoreImageFilters = true
         screen.layer?.backgroundColor = Style.graphite(0.055).cgColor
         screen.layer?.contentsGravity = .resizeAspectFill
         screen.layer?.masksToBounds = true
@@ -474,16 +473,33 @@ final class MacTile: NSView {
         line.append(NSAttributedString(string: m.status, attributes: [
             .foregroundColor: NSColor.white.withAlphaComponent(m.live ? 0.6 : 0.4), .font: NSFont.systemFont(ofSize: 12)]))
         status.attributedStringValue = line
-        if screen.layer?.contents as! CGImage? !== m.image { screen.layer?.contents = m.image }
+        let picture = m.dim ? m.image.map(dimmed) : m.image
+        if screen.layer?.contents as! CGImage? !== picture { screen.layer?.contents = picture }
         placeholder.isHidden = m.image != nil
-        screen.layer?.filters = m.dim && m.image != nil
-            ? [CIFilter(name: "CIColorControls", parameters: [kCIInputSaturationKey: 0, kCIInputBrightnessKey: -0.28])!] : nil
         progress.isHidden = m.progress == nil
         progress.value = m.progress ?? 0
         if let action = m.action, actionButton.title != action { actionButton.title = action }
         if let badge = m.badge, badgeButton.title != badge { badgeButton.title = badge }
         toolTip = m.tooltip
         restyle()
+    }
+
+    private static let imaging = CIContext()
+    private var dimmedCache: (source: CGImage, result: CGImage)?
+
+    /// The last picture of an offline Mac: grey and dark, made once per picture.
+    private func dimmed(_ image: CGImage) -> CGImage {
+        if let c = dimmedCache, c.source === image { return c.result }
+        let grey = CIImage(cgImage: image)
+            .applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: 0])
+            .applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: 0.42, y: 0, z: 0, w: 0),
+                "inputGVector": CIVector(x: 0, y: 0.42, z: 0, w: 0),
+                "inputBVector": CIVector(x: 0, y: 0, z: 0.42, w: 0),
+            ])
+        let result = MacTile.imaging.createCGImage(grey, from: grey.extent) ?? image
+        dimmedCache = (image, result)
+        return result
     }
 
     private func restyle() {
@@ -614,31 +630,46 @@ final class ThisMacTile: NSView {
     }
 }
 
-/// A round icon button (the gear in the header).
-final class IconButton: NSButton {
-    private var hovering = false { didSet { restyle() } }
+/// A round icon button (the gear in the header): just the symbol, with a soft circle behind it on hover.
+/// Drawn by hand so it's exactly round (an NSButton can come out taller than its constraints).
+final class IconButton: NSControl {
+    private let symbol: NSImage?
+    private var hovering = false { didSet { needsDisplay = true } }
     private var area: NSTrackingArea?
+    static let size: CGFloat = 30
 
-    init(symbol: String, tooltip: String, target: AnyObject, action: Selector) {
-        super.init(frame: .zero)
-        image = NSImage(systemSymbolName: symbol, accessibilityDescription: tooltip)?
-            .withSymbolConfiguration(.init(pointSize: 13, weight: .medium))
-        imagePosition = .imageOnly
-        isBordered = false
+    init(symbol name: String, tooltip: String, target: AnyObject, action: Selector) {
+        symbol = NSImage(systemSymbolName: name, accessibilityDescription: tooltip)?
+            .withSymbolConfiguration(.init(pointSize: 14, weight: .medium))
+        super.init(frame: NSRect(x: 0, y: 0, width: IconButton.size, height: IconButton.size))
         toolTip = tooltip
         self.target = target
         self.action = action
-        wantsLayer = true
-        layer?.cornerRadius = 15
-        layer?.borderWidth = 1
-        layer?.borderColor = Style.cardBorder.cgColor
         translatesAutoresizingMaskIntoConstraints = false
-        widthAnchor.constraint(equalToConstant: 30).isActive = true
-        heightAnchor.constraint(equalToConstant: 30).isActive = true
-        restyle()
+        setContentHuggingPriority(.required, for: .horizontal)
+        setContentHuggingPriority(.required, for: .vertical)
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: IconButton.size, height: IconButton.size) }
+
+    override func draw(_ dirtyRect: NSRect) {
+        if hovering {
+            NSColor.white.withAlphaComponent(0.08).setFill()
+            NSBezierPath(ovalIn: bounds).fill()
+        }
+        guard let symbol else { return }
+        let tinted = NSImage(size: symbol.size, flipped: false) { rect in
+            symbol.draw(in: rect)
+            NSColor.white.withAlphaComponent(self.hovering ? 0.9 : 0.55).set()
+            rect.fill(using: .sourceAtop)
+            return true
+        }
+        let s = symbol.size
+        tinted.draw(in: NSRect(x: round((bounds.width - s.width) / 2), y: round((bounds.height - s.height) / 2),
+                               width: s.width, height: s.height))
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -650,10 +681,23 @@ final class IconButton: NSButton {
 
     override func mouseEntered(with event: NSEvent) { hovering = true }
     override func mouseExited(with event: NSEvent) { hovering = false }
+    override func mouseDown(with event: NSEvent) {}
+    override func mouseUp(with event: NSEvent) {
+        if bounds.contains(convert(event.locationInWindow, from: nil)) { sendAction(action, to: target) }
+    }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+}
 
-    private func restyle() {
-        layer?.backgroundColor = NSColor.white.withAlphaComponent(hovering ? 0.08 : 0).cgColor
-        contentTintColor = NSColor.white.withAlphaComponent(hovering ? 0.9 : 0.6)
+/// Lines things up with the window's close / minimise / zoom buttons.
+enum TitleBar {
+    /// Centre of the window buttons, in points from the top of `view`, and the x just after the zoom button.
+    static func metrics(in view: NSView) -> (centerFromTop: CGFloat, afterButtons: CGFloat)? {
+        guard let window = view.window, let close = window.standardWindowButton(.closeButton),
+              let zoom = window.standardWindowButton(.zoomButton) else { return nil }
+        let c = close.convert(close.bounds, to: view)
+        let z = zoom.convert(zoom.bounds, to: view)
+        let fromTop = view.isFlipped ? c.midY : view.bounds.maxY - c.midY
+        return (fromTop, z.maxX)
     }
 }
 
@@ -664,14 +708,12 @@ final class AvatarView: NSImageView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        layer?.cornerRadius = 15
+        layer?.cornerRadius = 14
         layer?.masksToBounds = true
-        layer?.borderWidth = 1
-        layer?.borderColor = Style.cardBorder.cgColor
         imageScaling = .scaleProportionallyUpOrDown
         translatesAutoresizingMaskIntoConstraints = false
-        widthAnchor.constraint(equalToConstant: 30).isActive = true
-        heightAnchor.constraint(equalToConstant: 30).isActive = true
+        widthAnchor.constraint(equalToConstant: 28).isActive = true
+        heightAnchor.constraint(equalToConstant: 28).isActive = true
     }
 
     required init?(coder: NSCoder) { fatalError() }

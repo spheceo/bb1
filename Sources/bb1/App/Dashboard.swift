@@ -39,6 +39,12 @@ final class Dashboard: NSObject, NSWindowDelegate {
         window.title = "bb1"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
+        // An empty toolbar makes the title bar taller, so the window buttons (and the header that lines up
+        // with them) sit in a roomy strip instead of against the top edge.
+        let toolbar = NSToolbar(identifier: "bb1.dashboard")
+        toolbar.showsBaselineSeparator = false
+        window.toolbar = toolbar
+        window.toolbarStyle = .unified
         window.appearance = NSAppearance(named: .darkAqua)
         window.backgroundColor = Style.background
         window.isReleasedWhenClosed = false
@@ -161,6 +167,10 @@ final class ComputersPage: NSView {
     private var entries: [HostDirectory.Entry] = []
     private var tiles: [String: MacTile] = [:]
     private let thisMac = ThisMacTile()
+    /// Header items line up with the window buttons; set in `layout()` once those exist.
+    private var brandCenter: NSLayoutConstraint!
+    private var brandLeading: NSLayoutConstraint!
+    private var cornerCenter: NSLayoutConstraint!
     /// Per Mac: connect over the home network instead of Tailscale (Tailscale is the default).
     private static var preferHome: [String: Bool] {
         get { UserDefaults.standard.dictionary(forKey: "bb1.preferHome") as? [String: Bool] ?? [:] }
@@ -226,11 +236,12 @@ final class ComputersPage: NSView {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
+        brandLeading = brand.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 86)
+        brandCenter = brand.centerYAnchor.constraint(equalTo: topAnchor, constant: 20)
+        cornerCenter = corner.centerYAnchor.constraint(equalTo: topAnchor, constant: 20)
         NSLayoutConstraint.activate([
-            brand.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 86),
-            brand.centerYAnchor.constraint(equalTo: topAnchor, constant: 21),
-            corner.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
-            corner.centerYAnchor.constraint(equalTo: topAnchor, constant: 22),
+            brandLeading, brandCenter, cornerCenter,
+            corner.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20),
             titleRow.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 40),
             titleRow.topAnchor.constraint(equalTo: topAnchor, constant: 70),
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 40),
@@ -256,6 +267,16 @@ final class ComputersPage: NSView {
     @objc private func updatesChanged() { reload() }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        if let m = TitleBar.metrics(in: self) {
+            let center = round(m.centerFromTop)
+            if brandCenter.constant != center { brandCenter.constant = center; cornerCenter.constant = center }
+            let leading = round(m.afterButtons + 16)
+            if brandLeading.constant != leading { brandLeading.constant = leading }
+        }
+        super.layout()
+    }
 
     func setMessage(_ text: String) { message.stringValue = text }
 
@@ -538,6 +559,8 @@ final class SettingsPage: NSView {
     private let stack = NSStackView()
     private let logText = NSTextView()
     private var switchActions: [ObjectIdentifier: (Bool) -> Void] = [:]
+    private var backLeading: NSLayoutConstraint!
+    private var backCenter: NSLayoutConstraint!
 
     init(dashboard: Dashboard) {
         self.dashboard = dashboard
@@ -570,13 +593,17 @@ final class SettingsPage: NSView {
             stack.bottomAnchor.constraint(equalTo: doc.bottomAnchor, constant: -30),
         ])
         // Back to Your Macs, in the title bar row where the brand sits on the other page.
-        let back = PillButton("‹  Your Macs", kind: .link, target: self, action: #selector(goBack))
+        let back = PillButton("Your Macs", kind: .link, target: self, action: #selector(goBack))
+        back.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 11, weight: .bold))
+        back.imagePosition = .imageLeading
+        back.imageHugsTitle = true
+        back.contentTintColor = .white
         back.translatesAutoresizingMaskIntoConstraints = false
         addSubview(back)
-        NSLayoutConstraint.activate([
-            back.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 86),
-            back.centerYAnchor.constraint(equalTo: topAnchor, constant: 21),
-        ])
+        backLeading = back.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 86)
+        backCenter = back.centerYAnchor.constraint(equalTo: topAnchor, constant: 20)
+        NSLayoutConstraint.activate([backLeading, backCenter])
         logText.isEditable = false
         logText.drawsBackground = false
         logText.font = .monospacedSystemFont(ofSize: 10.5, weight: .regular)
@@ -600,6 +627,14 @@ final class SettingsPage: NSView {
     }
 
     @objc private func goBack() { dashboard?.showComputers() }
+
+    override func layout() {
+        if let m = TitleBar.metrics(in: self) {
+            backCenter.constant = round(m.centerFromTop)
+            backLeading.constant = round(m.afterButtons + 16)
+        }
+        super.layout()
+    }
 
     @objc private func checkForUpdates() { Updater.shared.check(userInitiated: true) }
 

@@ -6,6 +6,7 @@ offered in the app when "Include test builds" is on.
 
 ## Test builds since v0.0.0
 
+- **Header polish:** a taller title bar, so the header has room; the bb1 mark, gear, avatar and Settings' back button line up exactly with the window buttons (measured from them, not guessed); the gear is a true circle with no border (just a soft circle on hover); the right side mirrors the window buttons' inset; the back arrow is a proper chevron. Offline Macs' last screens are now properly greyed out (they rendered as black specks).
 - **New Your Macs page (direction A):** each of your other Macs is a tile showing its actual screen, refreshed every few seconds while the window is open ("Online · 9 ms"); offline Macs show their last screen, greyed ("Offline · seen 2 h ago"). Click a tile to connect. This Mac is a dashed tile with the bb1 mark and the sharing switch. No sidebar: Settings is behind the gear, with a back button. The host sends the pictures over a quiet side connection that doesn't touch a stream (hosts need build 15+).
 - Checking a host's build now happens at most every 5 minutes (it ran every 2 s while the window was open), and also for newly paired Macs.
 - **Update pill:** a new build shows up by itself as a pill in the Your Macs header ("Update to build 13"). Click it to update; the pill shows the progress, then "Updated to build 13", which fades away after a few seconds. bb1 checks every 5 minutes and whenever you bring it to the front (no need for Check for Updates).
