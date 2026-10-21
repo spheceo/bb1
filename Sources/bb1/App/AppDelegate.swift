@@ -132,6 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dashbo
         if hosting { startHost() }
         Updater.shared.windowOpen = { [weak self] in self?.dashboard.window.isVisible ?? false }
         Updater.shared.start()
+        if Updater.shared.justUpdated != nil { celebrateUpdate() }
         // After an update, come back the way it was (window open or just the menu bar icon).
         let showWindow = Updater.shared.justUpdated?.windowOpen ?? !launchedAtLogin
         if clientOptions.host != nil {
@@ -204,8 +205,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dashbo
 
     // MARK: Menu bar
 
+    /// Plays once after bb1 restarts into a new build (see `celebrateUpdate`).
+    private var celebration: Timer?
+
     private func updateIcon() {
-        guard let button = statusItem?.button else { return }
+        guard let button = statusItem?.button, celebration == nil else { return }
         button.toolTip = nil
         if let progress = dashboard?.updateProgress {
             // One bar for the whole update: your other Macs first, then this one.
@@ -221,6 +225,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dashbo
             button.appearsDisabled = !(isHosting || clientRole?.isActive == true)
         }
         button.title = ""
+    }
+
+    /// Just updated: the full progress bar becomes a checkmark, holds, then the usual mark comes back.
+    private func celebrateUpdate() {
+        guard let button = statusItem?.button else { return }
+        let start = Date()
+        func ease(_ t: Double) -> Double { let c = min(max(t, 0), 1); return c * c * (3 - 2 * c) }
+        func phase(_ t: Double, _ from: Double, _ to: Double) -> Double { ease((t - from) / (to - from)) }
+        button.appearsDisabled = false
+        button.toolTip = "Updated to \(BB1.displayName)"
+        celebration = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] timer in
+            let t = Date().timeIntervalSince(start)
+            button.image = MenuBarIcon.updated(bar: 1 - phase(t, 0.3, 0.6), check: phase(t, 0.6, 1.05),
+                                               checkOpacity: 1 - phase(t, 2.6, 3.0), half: phase(t, 2.7, 3.1))
+            guard t >= 3.1 else { return }
+            timer.invalidate()
+            self?.celebration = nil
+            self?.updateIcon()
+        }
     }
 
     func menuWillOpen(_ menu: NSMenu) {
