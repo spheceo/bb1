@@ -891,14 +891,8 @@ final class SettingsPage: NSView {
         reload()
     }
 
-    @objc private func openScreen() {
-        CGRequestScreenCaptureAccess()
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
-    }
-
-    @objc private func openAccessibility() {
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
-    }
+    @objc private func openScreen() { Permissions.fixScreenRecording() }
+    @objc private func openAccessibility() { Permissions.fixAccessibility() }
 
     @objc private func openLogs() {
         NSWorkspace.shared.open(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/bb1"))

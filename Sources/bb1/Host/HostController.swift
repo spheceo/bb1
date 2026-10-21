@@ -287,23 +287,16 @@ final class HostController {
         }
     }
 
-    static var hasScreenRecording: Bool { CGPreflightScreenCaptureAccess() }
-    static var hasAccessibility: Bool { AXIsProcessTrusted() }
+    static var hasScreenRecording: Bool { Permissions.screenRecording }
+    static var hasAccessibility: Bool { Permissions.accessibility }
 
     // MARK: Start
 
     func start() {
         Log.info("host: bb1 host starting on \(hostName), pairing key \(key.display)")
-        if !options.pipeline.synthetic && !HostController.hasScreenRecording && ProcessInfo.processInfo.environment["BB1_NO_PROMPT"] == nil {
-            Log.info("host: Screen Recording permission missing, asking")
-            CGRequestScreenCaptureAccess()
-        }
-        let mayPrompt = ProcessInfo.processInfo.environment["BB1_NO_PROMPT"] == nil
-        if !HostController.hasAccessibility && mayPrompt {
-            Log.info("host: Accessibility permission missing (needed for mouse/keyboard), asking")
-            let prompt = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
-            _ = AXIsProcessTrustedWithOptions([prompt: true] as CFDictionary)
-        }
+        if !options.pipeline.synthetic && !HostController.hasScreenRecording { Log.info("host: Screen Recording permission missing, asking") }
+        if !HostController.hasAccessibility { Log.info("host: Accessibility permission missing (needed for mouse/keyboard), asking") }
+        Permissions.askForMissing(screen: !options.pipeline.synthetic, accessibility: true)
 
         pipeline.onEncodedFrame = { [weak self] frame in self?.session?.send(frame) }
         audio.onChunk = { [weak self] pcm, captureUs in self?.session?.sendAudio(pcm, captureUs: captureUs) }

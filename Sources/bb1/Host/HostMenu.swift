@@ -112,14 +112,8 @@ final class HostRole: NSObject {
         NSPasteboard.general.setString(host.key.display, forType: .string)
     }
 
-    @objc private func openScreenRecording() {
-        CGRequestScreenCaptureAccess()
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
-    }
-
-    @objc private func openAccessibility() {
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
-    }
+    @objc private func openScreenRecording() { Permissions.fixScreenRecording() }
+    @objc private func openAccessibility() { Permissions.fixAccessibility() }
 }
 
 /// Host status for the dashboard's Host tab: everything from the menu, plus the latest log lines.

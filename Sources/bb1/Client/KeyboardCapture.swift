@@ -59,8 +59,7 @@ final class KeyboardCapture {
         if AXIsProcessTrusted() {
             installTap()
         } else if ProcessInfo.processInfo.environment["BB1_NO_PROMPT"] == nil {
-            let prompt = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
-            _ = AXIsProcessTrustedWithOptions([prompt: true] as CFDictionary)
+            Permissions.askForMissing(screen: false, accessibility: true)
             Log.info("client: no Accessibility permission yet; Cmd+Tab and other system shortcuts stay on this Mac")
             retryTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
                 guard let self, AXIsProcessTrusted() else { return }
