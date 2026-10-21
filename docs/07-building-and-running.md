@@ -7,9 +7,13 @@ Everything builds with the Command Line Tools that are already installed (Swift 
 - **Build:** Swift Package Manager (`swift build`). One `Package.swift` at the repo root.
 - **Editor:** anything. VS Code / Cursor with the Swift extension works well.
 - **Debugger:** `lldb`, included with the Command Line Tools.
-- **Signing:** `codesign` with **bb1 Local Signing**, a self-signed certificate that `scripts/signing-identity.sh` creates once in its own keychain (`~/Library/Application Support/bb1/signing/`).
+- **Signing:** from nightly-6, **Developer ID Application: SIPHESIHLE GODSGIFT MBUYISA (5PLDN9BDV4)** (paid Apple Developer Program), with the hardened runtime and a secure timestamp. Published builds and their disk image are notarized by Apple and stapled, so a new Mac opens them without a warning. Without the Developer ID installed, `bundle.sh` falls back to **bb1 Local Signing**, a self-signed certificate that `scripts/signing-identity.sh` creates once.
 
-  > Why not the Apple Development certificate: as of 2026-10-20 all of this account's Apple Development certificates are **revoked**. macOS reports apps signed with a revoked certificate as malware and moves them to the Trash. A local certificate can't be revoked, and macOS ties permissions to it just as well.
+  Both live in bb1's own keychain, `~/Library/Application Support/bb1/signing/bb1-signing.keychain-db` (password in `keychain-password` next to it, so builds never prompt). The Developer ID private key was made on the M1 (`developer-id/`), never uploaded; the certificate expires 2027-11-20. To renew: make a new request from that key (or a new one), create a Developer ID Application certificate at developer.apple.com, import it into that keychain. The updater trusts any bb1 signed by team 5PLDN9BDV4, so renewals don't break updates or permissions.
+
+  Notarization uses the keychain profile `bb1-notary` (`xcrun notarytool store-credentials bb1-notary --apple-id … --team-id 5PLDN9BDV4`, with an app-specific password). `release.sh --publish` / `--release` submit the app, staple it, then sign, submit and staple the `.dmg`.
+
+  > Why not the Apple Development certificate: as of 2026-10-20 all of this account's Apple Development certificates are **revoked**, and Development certificates aren't for distribution anyway.
 
 What we give up without Xcode: Interface Builder, SwiftUI previews and Instruments' GUI. None of them matter much for this project. Xcode can be installed later if Instruments becomes useful for profiling.
 
@@ -73,7 +77,7 @@ macOS attributes permissions to the terminal app here, so grant Screen Recording
 
 Install from the `.dmg` (drag to Applications), or from source with `scripts/install.sh`. The app sets itself up: it offers to move into Applications if opened from the disk image, quits older copies, and writes the login item (`~/Library/LaunchAgents/com.bb1.host.plist`, start at login + restart after a crash) when you share the Mac. To take it off a Mac, turn off Open at login in Settings, quit it and drag it to the Trash.
 
-Permissions are granted once to `BB1.app` (bundle ID `com.bb1.host`, kept from the old host app). Because every build is signed with the same certificate, they survive rebuilds.
+Permissions are granted once to `BB1.app` (bundle ID `com.bb1.host`, kept from the old host app). Because every build has the same signature identity (bundle ID + Developer ID team), they survive updates. Moving from the local certificate to the Developer ID (nightly-6) asked for them once more.
 
 Don't open the apps straight from `build/`. `~/Documents` is a privacy-protected folder, and a signed app inside it hangs at launch waiting for permission to read its own files. Both Macs keep bb1 in `/Applications`.
 
