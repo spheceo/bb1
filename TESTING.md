@@ -54,7 +54,7 @@ How each Mac signs in, without a key:
 
 On the host's dashboard (Host tab) you can see paired Macs, forget them, and turn Tailscale sign-in or code pairing off.
 
-**Testing Tailscale lag at home:** when a Mac is reachable both ways, its row has a **Home network / Tailscale** picker. Pick Tailscale, connect, and press ⌃⌥⇧S: the stats show *Tailscale · direct* (fast path) or *Tailscale · relayed* (through Tailscale's servers, slower). Away from home, the M1 shows up the same way, over Tailscale.
+**Testing Tailscale lag at home:** when a Mac is reachable both ways, its row has a **Home network / Tailscale** picker. Pick Tailscale, connect, and turn on stats (⌘I, or Stream → Show Stats): the stats show *Tailscale · direct* (fast path) or *Tailscale · relayed* (through Tailscale's servers, slower). Away from home, the M1 shows up the same way, over Tailscale.
 
 Optional: System Settings → Privacy & Security → **Accessibility** → turn on **bb1** on the M4, so Cmd+Tab and Cmd+Space go to the M1.
 
@@ -76,22 +76,24 @@ Everything ends up on the sharing Mac: `~/Library/Logs/bb1/host.log` on the M1, 
 
 ## 4. Stream options
 
-In the **Stream** menu (top menu bar while bb1 is in front), in the bb1 icon's menu → Stream Options, or with these keys. The keys always stay on the M4 and are never sent to the host:
+**Control follows the pointer.** With the pointer on the host's picture, the keyboard and mouse go to the host (all your shortcuts too, ⌘Tab included). Move it off the picture (onto the title bar, the black bars or out of the window) and they're the M4's again. Move back on and you're controlling the host again. A drag that starts on the picture keeps going until you let go.
+
+Only one key combination is bb1's own: **⌘⎋** gives control back to the M4 without moving the pointer, which is the way out in full screen. Click the picture to carry on.
+
+Everything else is in the **Stream** menu (top menu bar, or the bb1 icon's menu → Stream). Its shortcuts work while the M4 has control:
 
 | Keys | Does |
 |---|---|
-| ⌃⌥⇧F | Fullscreen on/off |
+| ⌘⎋ | Give control back to this Mac |
+| ⌃⌘F | Full screen on/off |
+| ⌘I | Show/hide stats |
 | — | Fill Screen (windowed): the window covers the screen, again to go back |
 | — | Scaling: Fit (black bars), Stretch to Fill, Actual Pixels (1:1) |
 | — | Input: Keyboard & Mouse, Keyboard Only, Mouse Only, View Only |
-| ⌃⌥⇧R | Release input: keyboard and mouse go back to the M4 (click the picture to take control again) |
-| ⌃⌥⇧M | Mute / unmute the host's sound |
-| ⌃⌥⇧S | Show/hide stats |
-| ⌃⌥⇧C | This Mac's cursor (default: instant, and it takes the host's shape: arrow, pointing hand, I-beam…) vs the host's cursor drawn in the video |
-| ⌃⌥⇧I | Flip scroll direction |
-| ⌃⌥⇧D | Disconnect (bb1 stays in the menu bar) |
+| — | Mute sound, flip scroll direction, use this Mac's cursor vs the host's cursor in the video |
+| — | Disconnect (or close the window; bb1 stays in the menu bar) |
 
-Input goes to the host only while the stream window is focused; your own cursor shows over the picture whenever bb1 isn't driving the host's mouse. Choices are remembered.
+Choices are remembered.
 
 ## Sound
 
@@ -100,7 +102,7 @@ The host's sound plays on the client: 48 kHz stereo, uncompressed (~1.5 Mbps), w
 ## 5. What to try
 
 1. **Feel:** use the M1 normally for a while: click around, type, scroll. Compare it with Parsec side by side if you can.
-2. **The Parsec freeze test:** leave a session open for an hour or more and use it now and then. Check the **recoveries** count in the stats (⌃⌥⇧S). If it goes up, bb1 fixed something by itself, and the log says what.
+2. **The Parsec freeze test:** leave a session open for an hour or more and use it now and then. Check the **recoveries** count in the stats (⌘I). If it goes up, bb1 fixed something by itself, and the log says what.
 3. **Sharpness:** look at small text. After you stop scrolling or typing, bb1 re-sends the still frame at higher quality, so text should sharpen within about half a second.
 4. **Network drop:** turn the M4's Wi-Fi off for 5 seconds, then on. It should come back by itself.
 5. **Break it on purpose:** host menu bar icon → Test Recovery → pick a fault. The picture should come back within about a second.
@@ -109,7 +111,7 @@ The host's sound plays on the client: 48 kHz stereo, uncompressed (~1.5 Mbps), w
 
 Most useful:
 
-- A screenshot of the stats line (⌃⌥⇧S) while you're using it.
+- A screenshot of the stats line (⌘I) while you're using it.
 - Anything that felt laggy, blurry or wrong, and roughly when.
 - The logs:
   - host (M1): `~/Library/Logs/bb1/host.log`, also in the menu: Open Log

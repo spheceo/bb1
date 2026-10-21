@@ -115,10 +115,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dashbo
         dashboard.onClosed = { [weak self] in self?.clientRole.windowsClosed() }
 
         if hosting { startHost() }
+        Updater.shared.windowOpen = { [weak self] in self?.dashboard.window.isVisible ?? false }
         Updater.shared.start()
+        // After an update, come back the way it was (window open or just the menu bar icon).
+        let showWindow = Updater.shared.justUpdated?.windowOpen ?? !launchedAtLogin
         if clientOptions.host != nil {
             role.start()
-        } else if !launchedAtLogin {
+        } else if showWindow {
             dashboard.show()
         }
         updateIcon()
@@ -205,39 +208,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dashbo
             return
         }
         menu.removeAllItems()
-        let open = NSMenuItem(title: "Open bb1", action: #selector(openDashboard), keyEquivalent: "")
-        open.target = self
+        // Every item that does something has an icon; status lines don't.
+        @discardableResult
+        func action(_ title: String, _ symbol: String, _ selector: Selector?, key: String = "") -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: selector, keyEquivalent: key)
+            item.target = self
+            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            menu.addItem(item)
+            return item
+        }
+        func info(_ title: String) {
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        }
+        let open = action("Open bb1", "macwindow", #selector(openDashboard))
         open.attributedTitle = NSAttributedString(string: "Open bb1", attributes: [.font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)])
-        menu.addItem(open)
-        if case .available(let r) = Updater.shared.state {
-            let update = NSMenuItem(title: "Update to \(r.title.lowercasedFirst)…", action: #selector(openDashboard), keyEquivalent: "")
-            update.target = self
-            menu.addItem(update)
+        switch Updater.shared.state {
+        case .available(let r) where dashboard.updatingHosts.isEmpty:
+            action("Update to \(r.title.lowercasedFirst)", "arrow.down.circle", #selector(updateFromMenu))
+        case .downloading(let r, let p):
+            info("Updating to \(r.shortName) · \(Int(p * 100))%")
+        case .installing(let r), .restarting(let r):
+            info("Installing \(r.shortName)…")
+        default:
+            if let r = dashboard.pendingRelease { info("Updating your other Macs to \(r.shortName)…") }
         }
         menu.addItem(.separator())
         hostRole?.addItems(to: menu)
         clientRole.addItems(to: menu)
         menu.addItem(.separator())
 
-        let share = NSMenuItem(title: "Share This Mac", action: #selector(toggleSharing), keyEquivalent: "")
-        share.target = self
-        share.state = isHosting ? .on : .off
-        menu.addItem(share)
-        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
-        settingsItem.target = self
-        menu.addItem(settingsItem)
+        action("Share This Mac", "dot.radiowaves.left.and.right", #selector(toggleSharing)).state = isHosting ? .on : .off
+        action("Settings…", "gearshape", #selector(openSettings), key: ",")
         if let hostRole {
             let more = NSMenu()
             more.addItem(hostRole.faultMenuItem())
-            let item = NSMenuItem(title: "Diagnostics", action: nil, keyEquivalent: "")
-            item.submenu = more
-            menu.addItem(item)
+            action("Diagnostics", "stethoscope", nil).submenu = more
         }
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit bb1", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        info("bb1 \(BB1.version) · build \(BB1.build)\(Updater.shared.justUpdated != nil ? " · just updated" : "")")
+        action("Quit bb1", "xmark.square", #selector(NSApplication.terminate(_:)), key: "q").target = nil
     }
 
     @objc private func openDashboard() { dashboard.show(.computers) }
+    /// Update from the menu bar without opening the window (your other Macs first, then this one).
+    @objc private func updateFromMenu() {
+        guard case .available(let r) = Updater.shared.state else { return }
+        dashboard.updateEverything(r)
+    }
     @objc private func openSettings() { dashboard.show(.settings) }
     @objc private func toggleSharing() { setHosting(!isHosting) }
 

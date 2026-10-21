@@ -170,9 +170,10 @@ final class ClientRole: NSObject {
             item.isEnabled = false
             menu.addItem(item)
         }
-        func action(_ title: String, _ selector: Selector) {
+        func action(_ title: String, _ symbol: String, _ selector: Selector) {
             let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
             item.target = self
+            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
             menu.addItem(item)
         }
         if connected, let s = stats {
@@ -184,14 +185,15 @@ final class ClientRole: NSObject {
         }
         if let stream {
             let options = NSMenuItem(title: "Stream", action: nil, keyEquivalent: "")
+            options.image = NSImage(systemSymbolName: "slider.horizontal.3", accessibilityDescription: nil)
             let sub = NSMenu()
             sub.autoenablesItems = false
             stream.menuItems().forEach(sub.addItem)
             options.submenu = sub
             menu.addItem(options)
-            action("Disconnect", #selector(disconnect))
+            action("Disconnect", "xmark.circle", #selector(disconnect))
         } else {
-            action("Connect…", #selector(connectMenu))
+            action("Connect…", "display", #selector(connectMenu))
         }
     }
 }

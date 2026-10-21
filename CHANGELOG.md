@@ -6,6 +6,12 @@ offered in the app when "Include test builds" is on.
 
 ## Test builds since v0.0.0
 
+- **Control follows the pointer:** on the host's picture, keyboard and mouse go to the host; off it (title bar, black bars, outside the window) they're this Mac's again, and back on gives the host control again. No more releasing input by hand.
+- **Simpler shortcuts:** the ⌃⌥⇧ chords are gone. ⌘⎋ gives control back without moving the pointer (the way out of full screen); the Stream menu uses normal Mac shortcuts while this Mac has control (⌃⌘F full screen, ⌘I stats).
+- **Readable stream overlay:** stats and messages sit on a solid dark card with padding and a shadow, so they read over any picture; stats wrap between items, never inside one; warnings are amber.
+- **Updating from the menu bar stays in the menu bar:** "Update to build N" updates your other Macs and then this one without opening the window, and the menu shows the progress. After any update bb1 comes back the way it was (window open, or just the menu bar icon). The menu always shows the version ("bb1 0.0.0 · build 21").
+- Every menu bar item that does something has an icon (Settings and Quit had one, the rest didn't).
+
 - **Faster recovery when macOS stops screen capture:** the host restarts capture as soon as macOS signals it (about 3 s sooner than before). On a nearly full disk, macOS's space clean-up (`replayd`) stops every screen capture; when that happens, or at connect, the client is told the host is low on disk space (under 5 GB free). Host notices on the stream now fade after 10 s, apart from "The host can't…" warnings.
 - **Remove bb1 is gone from Settings** (turn off Open at login and drag bb1 to the Trash instead).
 - A Mac too old to send its screen now says so on its tile instead of just "Online": "Online · update to see its screen", or for a bb1 from before updates, "Online · old bb1, update it there" (it has to be installed by hand once). Such a Mac is re-checked every 15 minutes, so once it's updated by hand its screen shows up without connecting to it first.

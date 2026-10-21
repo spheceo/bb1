@@ -63,6 +63,8 @@ final class Updater {
     /// Set on the first launch after an update, until dismissed.
     private(set) var justUpdated: JustUpdated?
     private var timer: Timer?
+    /// Is bb1's window open? Remembered across the restart, so an update doesn't open a window you'd closed.
+    var windowOpen: () -> Bool = { true }
 
     /// Only an installed, signed .app can replace itself (not `swift run`).
     var canUpdate: Bool { BB1.build > 0 && Bundle.main.bundlePath.hasSuffix(".app") }
@@ -276,7 +278,7 @@ final class Updater {
         let scriptURL = staging.appendingPathComponent("install.sh")
         do {
             try script.write(to: scriptURL, atomically: true, encoding: .utf8)
-            JustUpdated(from: BB1.build, to: release.build).save()
+            JustUpdated(from: BB1.build, to: release.build, windowOpen: windowOpen()).save()
             // A new session, so launchd doesn't kill the script along with this app when it exits.
             try Updater.spawnDetached(["/bin/sh", scriptURL.path, "\(getpid())", app.path, newApp.path, staging.path])
         } catch {
@@ -382,6 +384,8 @@ final class Updater {
 struct JustUpdated: Codable {
     var from: Int
     var to: Int
+    /// bb1's window was open before the restart (nil from builds before 21).
+    var windowOpen: Bool?
 
     private static var url: URL { BB1.supportDirectory().appendingPathComponent("just-updated.json") }
 

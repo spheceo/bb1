@@ -46,9 +46,10 @@ final class HostRole: NSObject {
             item.isEnabled = false
             menu.addItem(item)
         }
-        func action(_ title: String, _ selector: Selector) {
+        func action(_ title: String, _ symbol: String, _ selector: Selector) {
             let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
             item.target = self
+            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
             menu.addItem(item)
         }
         if let error = s.listenerError ?? s.lastError {
@@ -59,9 +60,9 @@ final class HostRole: NSObject {
             info("Hosting · waiting for a client")
         }
         if hasProblem && s.listenerError == nil && s.lastError == nil {
-            action("⚠️ Permissions Needed…", #selector(showStatus))
+            action("Permissions Needed…", "exclamationmark.triangle", #selector(showStatus))
         }
-        if s.clientName != nil { action("Disconnect Client", #selector(disconnect)) }
+        if s.clientName != nil { action("Disconnect Client", "xmark.circle", #selector(disconnect)) }
     }
 
     /// For Settings ▸ Test Recovery.

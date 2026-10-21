@@ -13,7 +13,7 @@
 
 These are targets until we measure. If the client display runs at 120 Hz (ProMotion), the display stage roughly halves.
 
-**First measurements (2026-10-20, M1 host → client on the same Mac, 1080p real screen):** encode ~3 ms, decode ~2–3 ms, capture → handed to the display ~7–11 ms. This leaves out the network and the display's own refresh. M1 → M4 over Wi-Fi is still to measure: the client's stats overlay (⌃⌥⇧S) shows it live.
+**First measurements (2026-10-20, M1 host → client on the same Mac, 1080p real screen):** encode ~3 ms, decode ~2–3 ms, capture → handed to the display ~7–11 ms. This leaves out the network and the display's own refresh. M1 → M4 over Wi-Fi is still to measure: the client's stats overlay (⌘I) shows it live.
 
 ## Encoder settings (starting point)
 

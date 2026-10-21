@@ -6,17 +6,9 @@ import BB1Core
 /// like Cmd+Tab and Cmd+Space. Those need an event tap, which needs Accessibility permission for
 /// this app. Without it, normal keys still work through an in-app monitor.
 ///
-/// Ctrl+Option+Shift + a letter is kept for local commands (see `localCommandKeys`).
+/// One chord stays on this Mac: ⌘⎋ gives control back. Everything else goes to the host.
 final class KeyboardCapture {
-    static let fullscreenKey: UInt16 = 3   // F
-    static let statsKey: UInt16 = 1        // S
-    static let cursorKey: UInt16 = 8       // C
-    static let disconnectKey: UInt16 = 2   // D
-    static let invertScrollKey: UInt16 = 34 // I
-    static let releaseKey: UInt16 = 15      // R
-    static let muteKey: UInt16 = 46         // M
-    static let localCommandKeys: Set<UInt16> = [fullscreenKey, statsKey, cursorKey, disconnectKey, invertScrollKey,
-                                                releaseKey, muteKey]
+    static let escapeKey: UInt16 = 53
 
     private let isActive: () -> Bool
     /// False in Mouse-only / View-only mode: keys stay on this Mac (shortcuts still work).
@@ -24,7 +16,7 @@ final class KeyboardCapture {
     private let onKey: (KeyMsg) -> Void
     /// Caps Lock turned on/off on this Mac (it isn't sent as a key; the host matches the state).
     var onCapsLock: ((Bool) -> Void)?
-    private let onLocalCommand: (UInt16) -> Void
+    private let onGiveBack: () -> Void
 
     private var tap: CFMachPort?
     private var tapSource: CFRunLoopSource?
@@ -34,10 +26,10 @@ final class KeyboardCapture {
     private var heldModifiers = Set<UInt16>()
     private(set) var hasSystemShortcuts = false
 
-    init(isActive: @escaping () -> Bool, onKey: @escaping (KeyMsg) -> Void, onLocalCommand: @escaping (UInt16) -> Void) {
+    init(isActive: @escaping () -> Bool, onKey: @escaping (KeyMsg) -> Void, onGiveBack: @escaping () -> Void) {
         self.isActive = isActive
         self.onKey = onKey
-        self.onLocalCommand = onLocalCommand
+        self.onGiveBack = onGiveBack
     }
 
     func start() {
@@ -45,8 +37,8 @@ final class KeyboardCapture {
             guard let self, self.isActive() else { return event }
             if self.hasSystemShortcuts { return nil } // the tap already handled it
             if !self.forwardKeys() {
-                if event.type == .keyDown, self.isLocalChord(event.keyCode, CGEventFlags(rawValue: UInt64(event.modifierFlags.rawValue))) {
-                    if !event.isARepeat { self.onLocalCommand(event.keyCode) }
+                if event.type == .keyDown, self.isGiveBack(event.keyCode, CGEventFlags(rawValue: UInt64(event.modifierFlags.rawValue))) {
+                    if !event.isARepeat { self.onGiveBack() }
                     return nil
                 }
                 return event
@@ -130,8 +122,8 @@ final class KeyboardCapture {
         }
         if !forwardKeys() {
             // Keys stay on this Mac; only bb1's own shortcuts are taken.
-            if type == .keyDown, isLocalChord(code, event.flags) {
-                if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 { onLocalCommand(code) }
+            if type == .keyDown, isGiveBack(code, event.flags) {
+                if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 { onGiveBack() }
                 return nil
             }
             return Unmanaged.passUnretained(event)
@@ -147,18 +139,18 @@ final class KeyboardCapture {
         63: CGEventFlags.maskSecondaryFn.rawValue,
     ]
 
-    private func isLocalChord(_ code: UInt16, _ flags: CGEventFlags) -> Bool {
-        let chord: CGEventFlags = [.maskControl, .maskAlternate, .maskShift]
-        return flags.contains(chord) && !flags.contains(.maskCommand) && KeyboardCapture.localCommandKeys.contains(code)
+    /// ⌘⎋ (Command and Escape, nothing else).
+    private func isGiveBack(_ code: UInt16, _ flags: CGEventFlags) -> Bool {
+        code == KeyboardCapture.escapeKey && flags.contains(.maskCommand)
+            && !flags.contains(.maskControl) && !flags.contains(.maskAlternate) && !flags.contains(.maskShift)
     }
 
     private func route(code: UInt16, type: CGEventType, flags: CGEventFlags, isRepeat: Bool) {
         switch type {
         case .keyDown:
-            let chord: CGEventFlags = [.maskControl, .maskAlternate, .maskShift]
-            if flags.contains(chord), !flags.contains(.maskCommand), KeyboardCapture.localCommandKeys.contains(code) {
+            if isGiveBack(code, flags) {
                 swallowedKeyUps.insert(code)
-                if !isRepeat { onLocalCommand(code) }
+                if !isRepeat { onGiveBack() }
                 return
             }
             onKey(KeyMsg(code: code, down: true, isRepeat: isRepeat))

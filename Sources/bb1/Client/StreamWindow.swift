@@ -2,15 +2,81 @@ import AppKit
 import AVFoundation
 import BB1Core
 
+/// A line in the overlay card (top left of the stream).
+enum OverlayLine {
+    case notice(String)
+    case warning(String)
+    case stat(String)
+    case hint(String)
+}
+
+/// A dark, padded card with text, drawn over the stream so it reads on any picture.
+/// One layout manager both measures and draws the text, so the card always fits it exactly.
+final class OverlayCard: CALayer {
+    private let storage = NSTextStorage()
+    private let layout = NSLayoutManager()
+    private let container = NSTextContainer()
+    static let padding = CGSize(width: 14, height: 10)
+
+    override init() {
+        super.init()
+        backgroundColor = NSColor(srgbRed: 0.075, green: 0.078, blue: 0.086, alpha: 0.94).cgColor
+        borderColor = NSColor.white.withAlphaComponent(0.1).cgColor
+        borderWidth = 1
+        cornerRadius = 10
+        shadowColor = NSColor.black.cgColor
+        shadowOpacity = 0.45
+        shadowRadius = 14
+        shadowOffset = CGSize(width: 0, height: -4)
+        needsDisplayOnBoundsChange = true
+        isHidden = true
+        container.lineFragmentPadding = 0
+        layout.addTextContainer(container)
+        storage.addLayoutManager(layout)
+    }
+
+    override init(layer: Any) { super.init(layer: layer) }
+    required init?(coder: NSCoder) { fatalError() }
+
+    /// Shows the text (or hides the card) and returns the card's size for at most `maxWidth`.
+    @discardableResult
+    func set(_ string: NSAttributedString?, maxWidth: CGFloat) -> CGSize {
+        guard let string, string.length > 0 else { isHidden = true; return .zero }
+        container.size = CGSize(width: max(40, maxWidth - 2 * OverlayCard.padding.width), height: .greatestFiniteMagnitude)
+        storage.setAttributedString(string)
+        layout.ensureLayout(for: container)
+        let used = layout.usedRect(for: container)
+        isHidden = false
+        setNeedsDisplay()
+        return CGSize(width: ceil(used.width) + 2 * OverlayCard.padding.width,
+                      height: ceil(used.height) + 2 * OverlayCard.padding.height)
+    }
+
+    override func draw(in ctx: CGContext) {
+        guard storage.length > 0 else { return }
+        ctx.saveGState()
+        // The text system draws top-down.
+        ctx.translateBy(x: 0, y: bounds.height)
+        ctx.scaleBy(x: 1, y: -1)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+        layout.drawGlyphs(forGlyphRange: layout.glyphRange(for: container),
+                          at: CGPoint(x: OverlayCard.padding.width, y: OverlayCard.padding.height))
+        NSGraphicsContext.restoreGraphicsState()
+        ctx.restoreGState()
+    }
+}
+
 /// The remote screen plus mouse input. Keyboard input is handled by `KeyboardCapture`.
 final class VideoView: NSView {
     let displayLayer = AVSampleBufferDisplayLayer()
-    private let overlay = CATextLayer()
-    private let banner = CATextLayer()
-    private var overlayLines = 1
+    private let overlay = OverlayCard()
+    private let banner = OverlayCard()
+    private var overlayText: NSAttributedString?
+    private var bannerText: NSAttributedString?
     private let blankCursor = NSCursor(image: NSImage(size: NSSize(width: 1, height: 1)), hotSpot: .zero)
 
-    var streamSize = CGSize(width: 16, height: 9)
+    var streamSize = CGSize(width: 16, height: 9) { didSet { relayout() } }
     var hideLocalCursor = true {
         didSet { if hideLocalCursor != oldValue { window?.invalidateCursorRects(for: self); updateCursor() } }
     }
@@ -24,7 +90,13 @@ final class VideoView: NSView {
     var inputEnabled: () -> Bool = { false }
     /// Called when the user clicks the picture while bb1 isn't taking input (to take control again).
     var onClickToControl: (() -> Void)?
+    /// The pointer moved onto (true) or off (false) the picture.
+    var onPointerOverPicture: ((Bool) -> Void)?
     var onInput: ((ControlMessage) -> Void)?
+    /// Mouse buttons held down that started on the picture (a drag keeps control until it ends).
+    private var buttonsHeld = 0
+    private var swallowMouseUp = false
+    private var lastPointerOver = false
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -34,19 +106,8 @@ final class VideoView: NSView {
         displayLayer.videoGravity = .resizeAspect
         displayLayer.backgroundColor = NSColor.black.cgColor
         layer!.addSublayer(displayLayer)
-
-        for text in [overlay, banner] {
-            text.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
-            text.fontSize = 12
-            text.foregroundColor = NSColor.white.cgColor
-            text.backgroundColor = NSColor.black.withAlphaComponent(0.6).cgColor
-            text.cornerRadius = 6
-            text.isWrapped = true
-            text.isHidden = true
-            layer!.addSublayer(text)
-        }
-        banner.alignmentMode = .center
-        banner.fontSize = 14
+        layer!.addSublayer(overlay)
+        layer!.addSublayer(banner)
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -54,6 +115,8 @@ final class VideoView: NSView {
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override var isOpaque: Bool { true }
+    /// Keys typed while this Mac has control (pointer off the picture): no beep. Menu shortcuts still work.
+    override func keyDown(with event: NSEvent) {}
 
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
@@ -72,57 +135,94 @@ final class VideoView: NSView {
         CATransaction.setDisableActions(true)
         displayLayer.frame = videoRect
         displayLayer.videoGravity = .resize
-        let width = min(bounds.width - 20, 620)
-        let height = CGFloat(overlayLines) * 15 + 10
-        overlay.frame = CGRect(x: 10, y: bounds.height - 10 - height, width: width, height: height)
-        let bw = min(bounds.width - 40, 520)
-        banner.frame = CGRect(x: (bounds.width - bw) / 2, y: bounds.height / 2 - 30, width: bw, height: 60)
+        let size = overlay.set(overlayText, maxWidth: min(bounds.width - 32, 600))
+        overlay.frame = CGRect(x: 16, y: bounds.height - 16 - size.height, width: size.width, height: size.height)
+        let b = banner.set(bannerText, maxWidth: min(bounds.width - 40, 440))
+        banner.frame = CGRect(x: ((bounds.width - b.width) / 2).rounded(), y: ((bounds.height - b.height) / 2).rounded(),
+                              width: b.width, height: b.height)
         CATransaction.commit()
+        window?.invalidateCursorRects(for: self)
     }
 
-    func setOverlay(_ text: String?) {
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        overlay.string = text
-        overlay.isHidden = text == nil
-        CATransaction.commit()
-        if let text {
-            // Rough line count at ~88 monospaced characters per line.
-            overlayLines = text.split(separator: "\n").reduce(0) { $0 + max(1, ($1.count + 87) / 88) }
-            relayout()
-        }
+    func setOverlay(_ lines: [OverlayLine]?) {
+        overlayText = lines.flatMap { $0.isEmpty ? nil : VideoView.format($0) }
+        relayout()
     }
 
     func setBanner(_ text: String?) {
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        banner.string = text.map { "\n\($0)" }
-        banner.isHidden = text == nil
-        CATransaction.commit()
+        bannerText = text.map {
+            let style = NSMutableParagraphStyle()
+            style.alignment = .center
+            return NSAttributedString(string: $0, attributes: [.font: NSFont.systemFont(ofSize: 14, weight: .medium),
+                                                                .foregroundColor: NSColor.white, .paragraphStyle: style])
+        }
+        relayout()
+    }
+
+    private static func format(_ lines: [OverlayLine]) -> NSAttributedString {
+        let out = NSMutableAttributedString()
+        let spaced = NSMutableParagraphStyle()
+        spaced.paragraphSpacing = 4
+        spaced.lineSpacing = 1
+        for (i, line) in lines.enumerated() {
+            let font: NSFont, color: NSColor, text: String
+            switch line {
+            case .notice(let t): text = t; font = .systemFont(ofSize: 13, weight: .medium); color = .white
+            case .warning(let t): text = t; font = .systemFont(ofSize: 13, weight: .semibold)
+                color = NSColor(srgbRed: 1, green: 0.8, blue: 0.4, alpha: 1)
+            case .stat(let t):
+                // Wrap between items ("60 fps · RTT 7 ms"), never inside one.
+                text = t.components(separatedBy: " · ").map { $0.replacingOccurrences(of: " ", with: "\u{00A0}") }.joined(separator: " · ")
+                font = .monospacedSystemFont(ofSize: 11.5, weight: .regular); color = NSColor.white.withAlphaComponent(0.88)
+            case .hint(let t): text = t; font = .systemFont(ofSize: 11.5, weight: .regular); color = NSColor.white.withAlphaComponent(0.55)
+            }
+            out.append(NSAttributedString(string: (i == 0 ? "" : "\n") + text,
+                                          attributes: [.font: font, .foregroundColor: color, .paragraphStyle: spaced]))
+        }
+        return out
     }
 
     // MARK: Cursor
 
     override func resetCursorRects() {
-        addCursorRect(bounds, cursor: shownCursor)
+        addCursorRect(videoRect, cursor: shownCursor)
     }
 
     private func updateCursor() {
         guard let window, window.isKeyWindow else { return }
-        let p = convert(window.mouseLocationOutsideOfEventStream, from: nil)
-        if bounds.contains(p) { shownCursor.set() }
+        if pointerOverPicture { shownCursor.set() }
+    }
+
+    /// The pointer is on the picture (not the black bars, the title bar or outside the window).
+    var pointerOverPicture: Bool {
+        guard let window else { return false }
+        return videoRect.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
+    }
+
+    /// Input goes to the host while the pointer is on the picture, or while a drag that started there lasts.
+    var controlsHost: Bool { buttonsHeld > 0 || pointerOverPicture }
+
+    private func pointerMoved() {
+        let over = pointerOverPicture
+        guard over != lastPointerOver else { return }
+        lastPointerOver = over
+        // Mid-drag the host keeps the pointer; the change is reported when the button comes up.
+        if buttonsHeld == 0 { onPointerOverPicture?(over) }
     }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect, .cursorUpdate],
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect, .cursorUpdate],
                                        owner: self, userInfo: nil))
     }
 
     override func cursorUpdate(with event: NSEvent) {
-        shownCursor.set()
+        if pointerOverPicture { shownCursor.set() } else { NSCursor.arrow.set() }
     }
+
+    override func mouseEntered(with event: NSEvent) { pointerMoved() }
+    override func mouseExited(with event: NSEvent) { pointerMoved() }
 
     // MARK: Mouse
 
@@ -162,22 +262,57 @@ final class VideoView: NSView {
         onInput?(.mouseButton(MouseButtonMsg(button: button, down: down, clicks: event.clickCount, x: x, y: y)))
     }
 
-    override func mouseMoved(with event: NSEvent) { sendMove(event) }
+    override func mouseMoved(with event: NSEvent) {
+        pointerMoved()
+        if pointerOverPicture { sendMove(event) }
+    }
     override func mouseDragged(with event: NSEvent) { sendMove(event) }
     override func rightMouseDragged(with event: NSEvent) { sendMove(event) }
     override func otherMouseDragged(with event: NSEvent) { sendMove(event) }
-    override func mouseDown(with event: NSEvent) {
-        if !inputEnabled() { onClickToControl?() }
-        sendButton(0, true, event)
+
+    /// A press on the picture. Off the picture (the black bars) it does nothing: that's this Mac's side.
+    private func press(_ button: Int, _ event: NSEvent) {
+        guard pointerOverPicture else { return }
+        if !inputEnabled() {
+            // This click only takes control back; it isn't passed on to the host.
+            swallowMouseUp = true
+            onClickToControl?()
+            return
+        }
+        buttonsHeld += 1
+        sendButton(button, true, event)
     }
-    override func mouseUp(with event: NSEvent) { sendButton(0, false, event) }
-    override func rightMouseDown(with event: NSEvent) { sendButton(1, true, event) }
-    override func rightMouseUp(with event: NSEvent) { sendButton(1, false, event) }
-    override func otherMouseDown(with event: NSEvent) { sendButton(event.buttonNumber, true, event) }
-    override func otherMouseUp(with event: NSEvent) { sendButton(event.buttonNumber, false, event) }
+
+    private func release(_ button: Int, _ event: NSEvent) {
+        if swallowMouseUp { swallowMouseUp = false; return }
+        guard buttonsHeld > 0 else { return }
+        buttonsHeld -= 1
+        sendButton(button, false, event)
+        if buttonsHeld == 0 {
+            // The drag ended off the picture: hand control back now.
+            lastPointerOver = pointerOverPicture
+            if !lastPointerOver { onPointerOverPicture?(false) }
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) { press(0, event) }
+    override func mouseUp(with event: NSEvent) { release(0, event) }
+    override func rightMouseDown(with event: NSEvent) { press(1, event) }
+    override func rightMouseUp(with event: NSEvent) { release(1, event) }
+    override func otherMouseDown(with event: NSEvent) { press(event.buttonNumber, event) }
+    override func otherMouseUp(with event: NSEvent) { release(event.buttonNumber, event) }
+
+    /// Re-read where the pointer is (it isn't tracked while the window isn't focused).
+    func syncPointer() { if buttonsHeld == 0 { lastPointerOver = pointerOverPicture } }
+
+    /// Control left this view (window lost focus, released): forget held buttons.
+    func resetButtons() {
+        buttonsHeld = 0
+        swallowMouseUp = false
+    }
 
     override func scrollWheel(with event: NSEvent) {
-        guard inputEnabled() else { return }
+        guard inputEnabled(), pointerOverPicture else { return }
         let sign = invertScroll ? -1.0 : 1.0
         onInput?(.scroll(ScrollMsg(dx: event.scrollingDeltaX * sign, dy: event.scrollingDeltaY * sign,
                                    precise: event.hasPreciseScrollingDeltas,
@@ -185,7 +320,11 @@ final class VideoView: NSView {
     }
 }
 
-/// One stream window and its connection, plus the stream options (menus and ⌃⌥⇧ shortcuts).
+/// One stream window and its connection, plus the stream options (menus and shortcuts).
+///
+/// Control follows the pointer: on the host's picture, keyboard and mouse go to the host; off it (the
+/// title bar, the black bars, outside the window) they stay on this Mac, where the normal shortcuts work.
+/// ⌘⎋ hands control back without moving the pointer (the way out of full screen).
 final class StreamWindowController: NSObject, NSWindowDelegate {
     let window: NSWindow
     let view: VideoView
@@ -195,12 +334,14 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
     private var keyboard: KeyboardCapture!
     private var settings = ClientSettings.load()
     private var connected = false
-    private var showStats = false
+    private var showStats = ProcessInfo.processInfo.environment["BB1_SHOW_STATS"] != nil // tests
     private var lastStats: ClientStats?
     private var notice: String?
     private var config: StreamConfig?
     private var windowedFrame: NSRect?
     private var wasCapturing = false
+    /// ⌘⎋ gave control back to this Mac; it returns when the pointer comes back onto the picture or you click it.
+    private var handedBack = false
     var onClosed: ((String?) -> Void)?
     var onPairedHost: (() -> Void)?
     /// Status text, connected, latest stats (for the menu bar).
@@ -283,13 +424,21 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
         view.inputEnabled = { [weak self] in (self?.isCapturing ?? false) && (self?.settings.input.mouse ?? false) }
         view.onInput = { connection.send($0) }
         view.onClickToControl = { [weak self] in
-            self?.window.makeKey()
+            guard let self else { return }
+            self.handedBack = false
+            self.window.makeKey()
             NSApp.activate(ignoringOtherApps: true)
+            self.updateCaptureState()
+        }
+        view.onPointerOverPicture = { [weak self] over in
+            guard let self else { return }
+            if over { self.handedBack = false }
+            self.updateCaptureState()
         }
         keyboard = KeyboardCapture(
             isActive: { [weak self] in self?.isCapturing ?? false },
             onKey: { connection.send(.key($0)) },
-            onLocalCommand: { [weak self] code in self?.localCommand(code) })
+            onGiveBack: { [weak self] in self?.releaseInput() })
         keyboard.forwardKeys = { [weak self] in self?.settings.input.keyboard ?? false }
         keyboard.onCapsLock = { connection.send(.capsLock($0)) }
         connection.setSound(settings.sound)
@@ -302,8 +451,8 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
         updateTitle()
     }
 
-    /// bb1 is in front, this window is focused, and we're connected: input goes to the host.
-    private var isCapturing: Bool { connected && NSApp.isActive && window.isKeyWindow }
+    /// Connected, bb1 in front with this window focused, and the pointer on the picture: input goes to the host.
+    private var isCapturing: Bool { connected && NSApp.isActive && window.isKeyWindow && !handedBack && view.controlsHost }
 
     func show() {
         window.makeKeyAndOrderFront(nil)
@@ -352,6 +501,7 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
     // MARK: Input state
 
     private func updateCaptureState() {
+        view.syncPointer()
         let now = isCapturing
         if now != wasCapturing {
             wasCapturing = now
@@ -360,10 +510,12 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
                 // Caps Lock may have changed while bb1 wasn't in front.
                 connection.send(.capsLock(NSEvent.modifierFlags.contains(.capsLock)))
             } else {
-                let why = !connected ? "not connected" : !NSApp.isActive ? "bb1 is in the background" : "window not focused"
+                let why = !connected ? "not connected" : !NSApp.isActive ? "bb1 is in the background"
+                    : !window.isKeyWindow ? "window not focused" : handedBack ? "⌘⎋" : "pointer left the picture"
                 Log.info("client: input released (\(why))")
                 connection.send(.releaseAll)
                 keyboard.reset()
+                view.resetButtons()
             }
         }
         updateTitle()
@@ -411,12 +563,13 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
         updateTitle()
     }
 
-    /// Give the keyboard and mouse back to this Mac (like clicking away in Parsec). Click the picture to take control again.
+    /// ⌘⎋: give the keyboard and mouse back to this Mac without moving the pointer. Moving back onto the
+    /// picture (or clicking it) gives control to the host again.
     @objc func releaseInput() {
-        connection.send(.releaseAll)
-        keyboard.reset()
-        NSApp.deactivate()
-        Log.info("client: input released (⌃⌥⇧R)")
+        guard !handedBack, isCapturing else { return }
+        handedBack = true
+        updateCaptureState()
+        flash("This Mac has control. Click the picture to go back.")
     }
 
     @objc func toggleSound() {
@@ -458,25 +611,13 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    private func localCommand(_ code: UInt16) {
-        switch code {
-        case KeyboardCapture.fullscreenKey: toggleFullscreen()
-        case KeyboardCapture.statsKey: toggleStats()
-        case KeyboardCapture.cursorKey: toggleCursor()
-        case KeyboardCapture.disconnectKey: disconnect()
-        case KeyboardCapture.invertScrollKey: toggleScroll()
-        case KeyboardCapture.releaseKey: releaseInput()
-        case KeyboardCapture.muteKey: toggleSound()
-        default: break
-        }
-    }
-
     /// The stream options, for the app's menu bar and the bb1 icon's menu.
     func menuItems() -> [NSMenuItem] {
         var items: [NSMenuItem] = []
-        func item(_ title: String, _ action: Selector, key: String = "", on: Bool = false, enabled: Bool = true) -> NSMenuItem {
+        func item(_ title: String, _ action: Selector, key: String = "", mods: NSEvent.ModifierFlags = .command,
+                  on: Bool = false, enabled: Bool = true) -> NSMenuItem {
             let i = NSMenuItem(title: title, action: action, keyEquivalent: key)
-            if !key.isEmpty { i.keyEquivalentModifierMask = [.control, .option, .shift] }
+            if !key.isEmpty { i.keyEquivalentModifierMask = mods }
             i.target = self
             i.state = on ? .on : .off
             i.isEnabled = enabled
@@ -491,7 +632,7 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
             return i
         }
         let fullscreen = window.styleMask.contains(.fullScreen)
-        items.append(item("Fullscreen", #selector(toggleFullscreen), key: "f", on: fullscreen))
+        items.append(item("Full Screen", #selector(toggleFullscreen), key: "f", mods: [.control, .command], on: fullscreen))
         items.append(item("Fill Screen (Windowed)", #selector(toggleFillScreen), on: windowedFrame != nil, enabled: !fullscreen))
         items.append(sub("Scaling", ScaleMode.allCases.map { mode in
             let i = item(mode.title, #selector(setScale(_:)), on: settings.scale == mode)
@@ -504,29 +645,29 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
             i.representedObject = mode.rawValue
             return i
         }))
-        items.append(item("Release Input", #selector(releaseInput), key: "r"))
-        items.append(item("Flip Scroll Direction", #selector(toggleScroll), key: "i", on: settings.invertScroll))
-        items.append(item("Use This Mac's Cursor (instant)", #selector(toggleCursor), key: "c", on: !settings.cursorInVideo))
+        items.append(item("Give Control Back to This Mac", #selector(releaseInput), key: "\u{1b}", enabled: isCapturing))
+        items.append(item("Flip Scroll Direction", #selector(toggleScroll), on: settings.invertScroll))
+        items.append(item("Use This Mac's Cursor (instant)", #selector(toggleCursor), on: !settings.cursorInVideo))
         items.append(.separator())
         let soundAvailable = connection.hostHasSound
-        items.append(item(soundAvailable ? "Mute Sound" : "Mute Sound (host needs updating)", #selector(toggleSound), key: "m",
+        items.append(item(soundAvailable ? "Mute Sound" : "Mute Sound (host needs updating)", #selector(toggleSound),
                           on: !settings.sound, enabled: soundAvailable))
-        items.append(item("Show Stats", #selector(toggleStats), key: "s", on: showStats))
+        items.append(item("Show Stats", #selector(toggleStats), key: "i", on: showStats))
         items.append(.separator())
-        items.append(item("Disconnect", #selector(disconnect), key: "d"))
+        items.append(item("Disconnect", #selector(disconnect)))
         return items
     }
 
     private func refreshOverlay() {
         guard showStats || notice != nil else { view.setOverlay(nil); return }
-        var lines: [String] = []
-        if let notice { lines.append(notice.hasPrefix("The host") ? "⚠️ \(notice)" : notice) }
+        var lines: [OverlayLine] = []
+        if let notice { lines.append(notice.hasPrefix("The host") ? .warning(notice) : .notice(notice)) }
         if showStats, let s = lastStats {
-            lines.append(s.summary)
-            lines.append("system shortcuts: \(keyboard.hasSystemShortcuts ? "sent to host" : "stay local (allow Accessibility)") · input: \(settings.input.title) · sound: \(settings.sound ? "on" : "muted")")
-            lines.append("⌃⌥⇧ F fullscreen · R release · M mute · S stats · C cursor · I scroll · D disconnect")
+            lines.append(.stat(s.summary))
+            lines.append(.stat("system shortcuts \(keyboard.hasSystemShortcuts ? "go to the host" : "stay here (allow Accessibility)") · input \(settings.input.title.lowercased()) · sound \(settings.sound ? "on" : "muted")"))
+            lines.append(.hint("Off the picture, this Mac has control. ⌘⎋ gives it back · ⌃⌘F full screen · ⌘I stats"))
         }
-        view.setOverlay(lines.joined(separator: "\n"))
+        view.setOverlay(lines)
     }
 
     func windowDidBecomeKey(_ notification: Notification) { updateCaptureState() }
