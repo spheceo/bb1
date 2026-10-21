@@ -39,6 +39,27 @@ fi
 [[ "$mode" == "--release" ]] && export BB1_RELEASE=1
 scripts/bundle.sh
 mkdir -p dist
+
+# Published builds signed with the Developer ID are notarized by Apple (and the ticket stapled on), so a
+# new Mac opens them without a warning. Credentials: `xcrun notarytool store-credentials bb1-notary`.
+signed_by=$(codesign -dvv build/bb1.app 2>&1 | awk -F= '/^Authority=Developer ID Application/ {print $2; exit}')
+notarize() {
+  echo "==> Notarizing $1 (usually a minute or two)"
+  local result
+  result=$(xcrun notarytool submit "$1" --keychain-profile bb1-notary --wait --output-format json)
+  if [[ "$result" != *'"status":"Accepted"'* ]]; then
+    echo "!! Apple didn't accept $1: $result"
+    local id=${${result#*\"id\":\"}%%\"*}
+    [[ -n "$id" ]] && xcrun notarytool log "$id" --keychain-profile bb1-notary || true
+    exit 1
+  fi
+}
+if [[ -n "$signed_by" && "$mode" != "test" ]]; then
+  ditto -c -k --keepParent build/bb1.app build/notarize.zip
+  notarize build/notarize.zip
+  rm -f build/notarize.zip
+  xcrun stapler staple -q build/bb1.app
+fi
 if [[ "$mode" == "--release" ]]; then
   zip="dist/bb1-v$version-build$build.zip"
 else
@@ -50,6 +71,13 @@ ditto -c -k --keepParent build/bb1.app "$zip"
 echo "==> $zip ($(du -h "$zip" | cut -f1))"
 if [[ "$mode" == "--release" ]]; then dmg="dist/bb1-v$version.dmg"; else dmg="dist/bb1-nightly-$nightly${dirty:-}.dmg"; fi
 scripts/make-dmg.sh "$dmg"
+if [[ -n "$signed_by" ]]; then
+  codesign --force --sign "$signed_by" --timestamp "$dmg"
+  if [[ "$mode" != "test" ]]; then
+    notarize "$dmg"
+    xcrun stapler staple -q "$dmg"
+  fi
+fi
 
 if [[ "$mode" == "--release" || "$mode" == "--publish" ]]; then
   # What changed since the last published build.

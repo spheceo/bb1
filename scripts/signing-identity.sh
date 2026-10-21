@@ -2,6 +2,7 @@
 # Creates (once) a self-signed code-signing certificate just for bb1, in its own keychain:
 #   ~/Library/Application Support/bb1/signing/bb1-signing.keychain-db
 # Prints the certificate's SHA-1 (for codesign -s) on success. Used by bundle.sh.
+# With --developer-id: prints the Developer ID Application identity kept in the same keychain, if any.
 # The keychain is added to your keychain search list so codesign can find it.
 #
 # Why: macOS ties Screen Recording / Accessibility permissions to the signing certificate.
@@ -52,10 +53,20 @@ EOF
   rm -rf "$tmp"
 fi
 
-# codesign only finds identities in keychains on the search list.
-if ! security list-keychains -d user | grep -qF "$kc"; then
-  current=("${(@f)$(security list-keychains -d user | sed -e 's/^ *"//' -e 's/"$//')}")
-  security list-keychains -d user -s "${current[@]}" "$kc"
-fi
+# codesign only finds identities in keychains on the search list. Rebuild the list one path per entry
+# (keeping the login keychain first): an earlier version could merge the entries into one broken path.
+login="$HOME/Library/Keychains/login.keychain-db"
+list=("$login")
+security list-keychains -d user | while IFS= read -r line; do
+  line=${line#*\"}; line=${line%\"}
+  [[ -f "$line" && "$line" != "$login" && "$line" != "$kc" ]] && list+=("$line")
+done
+list+=("$kc")
+security list-keychains -d user -s "${list[@]}"
 
-security find-identity -p codesigning "$kc" | grep "\"$name\"" | head -1 | awk '{print $2}'
+if [[ "${1:-}" == "--developer-id" ]]; then
+  # The owner's Apple Developer ID, if it's installed here (see docs/07-building-and-running.md).
+  security find-identity -v -p codesigning "$kc" | awk -F'"' '/Developer ID Application/ {print $2; exit}'
+else
+  security find-identity -p codesigning "$kc" | grep "\"$name\"" | head -1 | awk '{print $2}'
+fi

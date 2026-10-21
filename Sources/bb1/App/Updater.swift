@@ -261,7 +261,15 @@ final class Updater {
         return newApp
     }
 
-    /// The new app must satisfy this app's designated requirement: same bundle ID, same signing certificate.
+    /// bb1 signed with the owner's Developer ID (Apple-issued, team 5PLDN9BDV4). Builds up to nightly-4 were
+    /// signed with a local certificate; this lets them move over to Developer ID-signed builds.
+    private static let developerIDRequirement = """
+        anchor apple generic and identifier "com.bb1.host" and certificate leaf[subject.OU] = "5PLDN9BDV4" \
+        and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists
+        """
+
+    /// The new app must satisfy this app's designated requirement (same bundle ID, same signing certificate),
+    /// or be bb1 signed with the owner's Developer ID.
     private static func checkSignature(_ app: URL) throws {
         var me: SecCode?
         var meStatic: SecStaticCode?
@@ -274,7 +282,12 @@ final class Updater {
             throw UpdateError("Couldn't check the update's signature")
         }
         let flags = SecCSFlags(rawValue: kSecCSCheckAllArchitectures | kSecCSStrictValidate | kSecCSCheckNestedCode)
-        let status = SecStaticCodeCheckValidity(new, flags, requirement)
+        var status = SecStaticCodeCheckValidity(new, flags, requirement)
+        var developerID: SecRequirement?
+        if status != errSecSuccess,
+           SecRequirementCreateWithString(developerIDRequirement as CFString, [], &developerID) == errSecSuccess, let developerID {
+            status = SecStaticCodeCheckValidity(new, flags, developerID)
+        }
         guard status == errSecSuccess else {
             throw UpdateError("The update isn't signed with bb1's certificate (error \(status)), so it wasn't installed")
         }
