@@ -235,9 +235,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dashbo
             if let r = dashboard.pendingRelease { info("Updating your other Macs to \(r.shortName)…") }
         }
         menu.addItem(.separator())
+        // Sharing and connection status only when there's something to say (Open bb1 covers connecting).
+        let before = menu.numberOfItems
         hostRole?.addItems(to: menu)
         clientRole.addItems(to: menu)
-        menu.addItem(.separator())
+        if menu.numberOfItems > before { menu.addItem(.separator()) }
 
         action("Share This Mac", "dot.radiowaves.left.and.right", #selector(toggleSharing)).state = isHosting ? .on : .off
         action("Settings…", "gearshape", #selector(openSettings), key: ",")

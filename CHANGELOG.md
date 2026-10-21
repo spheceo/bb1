@@ -6,6 +6,7 @@ offered in the app when "Include test builds" is on.
 
 ## Test builds since v0.0.0
 
+- Menu bar menu: "Not connected" and "Connect…" are gone (Open bb1 does the same); the connection lines only appear while you're connected.
 - **Control follows the pointer:** on the host's picture, keyboard and mouse go to the host; off it (title bar, black bars, outside the window) they're this Mac's again, and back on gives the host control again. No more releasing input by hand.
 - **Simpler shortcuts:** the ⌃⌥⇧ chords are gone. ⌘⎋ gives control back without moving the pointer (the way out of full screen); the Stream menu uses normal Mac shortcuts while this Mac has control (⌃⌘F full screen, ⌘I stats).
 - **Readable stream overlay:** stats and messages sit on a solid dark card with padding and a shadow, so they read over any picture; stats wrap between items, never inside one; warnings are amber.

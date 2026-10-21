@@ -163,8 +163,9 @@ final class ClientRole: NSObject {
 
     var isActive: Bool { connected }
 
-    /// The client part of the menu bar menu.
+    /// The client part of the menu bar menu: only while connected (Open bb1 is how you connect).
     func addItems(to menu: NSMenu) {
+        guard stream != nil else { return }
         func info(_ title: String) {
             let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
             item.isEnabled = false
@@ -181,7 +182,7 @@ final class ClientRole: NSObject {
             if let l = s.latencyMs { line += String(format: " · %.0f ms", l) }
             info(line)
         } else {
-            info(stream == nil ? "Not connected" : statusText)
+            info(statusText)
         }
         if let stream {
             let options = NSMenuItem(title: "Stream", action: nil, keyEquivalent: "")
@@ -192,8 +193,6 @@ final class ClientRole: NSObject {
             options.submenu = sub
             menu.addItem(options)
             action("Disconnect", "xmark.circle", #selector(disconnect))
-        } else {
-            action("Connect…", "display", #selector(connectMenu))
         }
     }
 }
