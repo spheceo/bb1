@@ -18,22 +18,6 @@ let ink = graphite(0.08)
 /// Points from the top-left (like Finder's icon positions) → AppKit's bottom-left.
 func p(_ x: CGFloat, _ y: CGFloat) -> NSPoint { NSPoint(x: x, y: H - y) }
 
-/// The "Half" mark: rounded screen outline, left half solid.
-func drawMark(in rect: NSRect, color: NSColor) {
-    let line = rect.width * 7.5 / 76
-    let r = rect.insetBy(dx: line / 2, dy: line / 2)
-    let path = NSBezierPath(roundedRect: r, xRadius: rect.width * 14 / 76, yRadius: rect.width * 14 / 76)
-    path.lineWidth = line
-    color.setStroke()
-    color.setFill()
-    path.stroke()
-    NSGraphicsContext.saveGraphicsState()
-    NSBezierPath(rect: NSRect(x: rect.minX - line, y: rect.minY - line, width: rect.width / 2 + line, height: rect.height + 2 * line)).addClip()
-    path.fill()
-    path.stroke()
-    NSGraphicsContext.restoreGraphicsState()
-}
-
 /// Text centred on x (or left-aligned at x), top edge at y from the top.
 func text(_ s: String, size: CGFloat, weight: NSFont.Weight, color: NSColor, x: CGFloat, top: CGFloat, centered: Bool = true) {
     let str = NSAttributedString(string: s, attributes: [.font: NSFont.systemFont(ofSize: size, weight: weight), .foregroundColor: color])
@@ -52,10 +36,6 @@ func render(scale: CGFloat) -> Data {
     let rightHalf = NSRect(x: W / 2, y: 0, width: W / 2, height: H)
     light.setFill(); leftHalf.fill()
     dark.setFill(); rightHalf.fill()
-
-    // Wordmark, top left.
-    drawMark(in: NSRect(x: 28, y: H - 28 - 16, width: 20, height: 16), color: ink)
-    text("bb1", size: 15, weight: .bold, color: ink, x: 56, top: 26, centered: false)
 
     // The arc from bb1 to Applications, half ink and half white like the mark.
     let arc = NSBezierPath()
