@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Check release safety boundaries without building, signing, or contacting Apple/GitHub."""
 import os
+import hashlib
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -58,3 +60,50 @@ with tempfile.TemporaryDirectory(prefix="bb1-release-guards-") as temporary:
     result = run([str(source / "ci-signing.sh")], root, empty)
     assert result.returncode != 0 and "Missing MACOS_CERTIFICATE secret" in result.stdout
     print("PASS: missing credentials cannot create a fallback CI identity")
+
+    # An interrupted artifact upload must leave a draft, never a visible partial release.
+    dist = root / "dist"
+    dist.mkdir()
+    filenames = ["bb1-nightly--23.dmg", "bb1-0.0.1-build2.zip"]
+    for filename in filenames:
+        (dist / filename).write_bytes(b"Fixture deliverable")
+    (dist / "SHA256SUMS").write_text("".join(
+        f"{hashlib.sha256((dist / filename).read_bytes()).hexdigest()}  {filename}\n"
+        for filename in filenames
+    ))
+    commands = Path(temporary) / "bin"
+    commands.mkdir()
+    mock = commands / "gh"
+    mock.write_text('''#!/usr/bin/env python3
+import json, os, pathlib, sys
+args = sys.argv[1:]
+state = pathlib.Path(os.environ["MOCK_STATE"])
+with open(os.environ["MOCK_LOG"], "a") as log:
+    log.write(json.dumps(args) + "\\n")
+if args[:2] == ["release", "view"]:
+    if not state.exists(): sys.exit(1)
+    draft = state.read_text() == "draft"
+    print(str(draft).lower() if "--jq" in args else json.dumps({"isDraft": draft}))
+elif args[:2] == ["release", "create"]:
+    state.write_text("draft")
+elif args[:2] == ["release", "upload"]:
+    if os.environ.get("MOCK_FAIL_UPLOAD") == "1": sys.exit(1)
+elif args[:2] == ["release", "edit"]:
+    state.write_text("public")
+else: sys.exit(2)
+''')
+    mock.chmod(0o755)
+    state, log = Path(temporary) / "state", Path(temporary) / "commands"
+    publish_env = os.environ | {"PATH": str(commands) + os.pathsep + os.environ["PATH"], "MOCK_STATE": str(state), "MOCK_LOG": str(log), "BB1_RELEASE_TAG": "nightly--23"}
+    result = run([str(source / "ci-publish.sh")], root, publish_env | {"MOCK_FAIL_UPLOAD": "1"})
+    assert result.returncode != 0 and state.read_text() == "draft"
+    assert all(json.loads(line)[:2] != ["release", "edit"] for line in log.read_text().splitlines())
+    print("PASS: upload failure leaves the release hidden as a draft")
+    result = run([str(source / "ci-publish.sh")], root, publish_env)
+    assert result.returncode == 0 and state.read_text() == "public", result.stderr
+    edits = [json.loads(line) for line in log.read_text().splitlines() if json.loads(line)[:2] == ["release", "edit"]]
+    assert len(edits) == 1 and "--prerelease" in edits[0] and "--latest=false" in edits[0]
+    print("PASS: draft retry publishes a nightly without replacing the stable release")
+    result = run([str(source / "ci-publish.sh")], root, publish_env)
+    assert result.returncode != 0 and "Refusing to replace" in result.stderr
+    print("PASS: an already public release cannot be overwritten")

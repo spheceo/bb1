@@ -11,7 +11,8 @@ files = [app]
 # Named " ": Finder writes names in near-black over the picture, so the background draws "Applications" in white.
 symlinks = {" ": "/Applications"}
 icon = defines["icon"]
-hide_extensions = [appname]
+# Do not set hide_extensions on the signed app: SetFile adds com.apple.FinderInfo
+# after signing, which makes strict codesign verification and notarization fail.
 
 background = defines["background"]
 # 400 pt of content plus the title bar.

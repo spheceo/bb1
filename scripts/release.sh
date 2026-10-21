@@ -51,7 +51,7 @@ notarize_file() {
   xcrun notarytool submit "$file" "${notary_args[@]}" --output-format json > "$receipt"
   id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$receipt")
   echo "==> Apple submission $id ($label)"
-  if ! xcrun notarytool wait "$id" "${notary_args[@]}" --timeout 50m --output-format json > "build/notary/$label-result.json"; then
+  if ! xcrun notarytool wait "$id" "${notary_args[@]}" --timeout 150m --output-format json > "build/notary/$label-result.json"; then
     cat "build/notary/$label-result.json"
     echo "Apple submission $id did not finish successfully; see the saved receipts." >&2
     return 1
@@ -82,6 +82,13 @@ else
 fi
 rm -f "$zip"
 ditto -c -k --keepParent build/bb1.app "$zip"
+check=$(mktemp -d)
+mounted=0
+cleanup() {
+  if [[ "$mounted" == 1 ]]; then hdiutil detach "$check/dmg" >/dev/null || true; fi
+  rm -rf "$check"
+}
+trap cleanup EXIT
 scripts/make-dmg.sh "$dmg"
 if [[ -n "$signed_by" ]]; then
   keychain_args=()
@@ -89,8 +96,18 @@ if [[ -n "$signed_by" ]]; then
   codesign --force --sign "$signed_by" "${keychain_args[@]}" --timestamp "$dmg"
   codesign --verify --strict "$dmg"
   # Match the Developer ID requirement accepted by the nightly-5 bridge updater.
-  codesign --verify --strict -R='anchor apple generic and identifier "com.bb1.host" and certificate leaf[subject.OU] = "5PLDN9BDV4"' build/bb1.app
+  codesign --verify --strict -R='anchor apple generic and identifier "com.bb1.host" and certificate leaf[subject.OU] = "5PLDN9BDV4" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists' build/bb1.app
 fi
+# The layout tool must not mutate the app's signature while placing it in the image.
+mkdir "$check/dmg"
+hdiutil attach -readonly -nobrowse -mountpoint "$check/dmg" "$dmg" >/dev/null
+mounted=1
+codesign --verify --strict "$check/dmg/bb1.app"
+[[ -L "$check/dmg/ " && $(readlink "$check/dmg/ ") == /Applications ]]
+[[ -f "$check/dmg/.background.tiff" ]]
+if [[ "$notarize" == 1 ]]; then xcrun stapler validate "$check/dmg/bb1.app"; fi
+hdiutil detach "$check/dmg" >/dev/null
+mounted=0
 if [[ "$notarize" == 1 ]]; then
   notarize_file "$dmg" dmg
   xcrun stapler staple -q "$dmg"
@@ -99,8 +116,6 @@ if [[ "$notarize" == 1 ]]; then
   spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
 fi
 # Verify the actual update archive, including the top-level name and stamped build.
-check=$(mktemp -d)
-trap 'rm -rf "$check"' EXIT
 ditto -x -k "$zip" "$check"
 codesign --verify --strict "$check/bb1.app"
 [[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$check/bb1.app/Contents/Info.plist") == com.bb1.host ]]

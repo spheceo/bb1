@@ -20,7 +20,8 @@ concurrency:
 jobs:
   build:
     runs-on: macos-26
-    timeout-minutes: 120
+    # A new Apple team can wait hours for its first notarizations.
+    timeout-minutes: 360
     env:
       BB1_RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || '' }}
       BB1_NOTARIZE: ${{ github.event_name == 'push' && '1' || inputs.notarize && '1' || '0' }}

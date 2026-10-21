@@ -12,7 +12,7 @@ venv="$HOME/Library/Caches/bb1/dmgbuild"
 if [[ ! -x "$venv/bin/dmgbuild" ]]; then
   echo "==> Installing dmgbuild (once)"
   python3 -m venv "$venv"
-  "$venv/bin/pip" install -q dmgbuild
+  "$venv/bin/pip" install -q dmgbuild==1.6.7
 fi
 
 work="build/dmg"
