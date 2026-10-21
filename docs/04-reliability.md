@@ -73,6 +73,8 @@ Over a Tailscale relay to another continent the round trip is ~300 ms, and relay
 
 - **Resend windows scale with the round trip.** The client keeps a half-received frame for 4× RTT + 100 ms (at least 250 ms) and gives up on a gap after 4× RTT; the host keeps sent packets for 2 s. With fixed short windows every lost packet became a freeze plus a keyframe.
 - **Rate follows loss.** Once a second the host compares packets resent with packets sent. At least 4 resent and at least 2% of what was sent: bitrate and burst pacing drop to 70% (down to 15%). After 4 clean seconds they go up 15% at a time, back to full. Over a Tailscale relay a session starts at 40%. The bitrate changes on the live encoder (no keyframe).
+- **Bursts fit the relay.** On a constrained path big frames are paced at ~3× the bitrate in steps of 8 packets (a Tailscale relay drops what overflows its short queue; on a LAN it's 300 Mbps in steps of 32).
+- **One keyframe request per round trip.** Requests are spaced by at least 1.2× RTT, re-asks by 1.5× RTT + 100 ms; before the first pong the RTT is guessed as half the handshake time.
 - **Tiles show the real round trip:** the dashboard pings the host on its preview connection (build 24+ hosts answer) rather than timing the picture download.
 
 ## Host settings that keep it awake

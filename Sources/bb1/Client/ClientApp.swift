@@ -71,19 +71,27 @@ extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
 }
 
-/// Client mode: the connect window, the stream window, and the client part of the menu bar menu.
+/// Client mode: the stream windows (one per Mac, side by side if you like), and the client part of the menu bar menu.
 final class ClientRole: NSObject {
     let options: ClientOptions
     var onChange: (() -> Void)?
     /// Whether bb1 stays in the menu bar after its windows close.
     var keepRunning: () -> Bool = { true }
-    private var stream: StreamWindowController?
     /// Show/hide the dashboard (set by the app).
     var showDashboard: ((String?) -> Void)?
     var hideDashboard: (() -> Void)?
-    private(set) var statusText = "Not connected"
-    private(set) var stats: ClientStats?
-    private(set) var connected = false
+
+    /// One open stream: its window and what it last reported.
+    private final class Stream {
+        let controller: StreamWindowController
+        var status = "Connecting…"
+        var connected = false
+        var stats: ClientStats?
+        init(_ controller: StreamWindowController) { self.controller = controller }
+    }
+    /// Oldest first. Every open stream window is owned here: a window whose controller went away would
+    /// leave its keyboard hook pointing at freed memory.
+    private var streams: [Stream] = []
 
     init(options: ClientOptions) {
         self.options = options
@@ -100,32 +108,29 @@ final class ClientRole: NSObject {
         }
     }
 
-
-    func showConnect(_ message: String?) {
-        if let stream {
-            stream.window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-        showDashboard?(message)
-    }
+    func showConnect(_ message: String?) { showDashboard?(message) }
 
     private func open(_ target: ClientTarget) {
         hideDashboard?()
-        let s = StreamWindowController(target: target)
-        s.onPairedHost = { [weak self] in self?.onChange?() }
-        s.onUpdate = { [weak self] status, connected, stats in
-            self?.statusText = status
-            self?.connected = connected
-            if let stats { self?.stats = stats }
+        // Already streaming from that Mac: bring its window forward instead of a second stream.
+        if let existing = streams.first(where: { $0.controller.target.label == target.label }) {
+            existing.controller.window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let c = StreamWindowController(target: target)
+        let stream = Stream(c)
+        c.onPairedHost = { [weak self] in self?.onChange?() }
+        c.onUpdate = { [weak self, weak stream] status, connected, stats in
+            guard let stream else { return }
+            stream.status = status
+            stream.connected = connected
+            if let stats { stream.stats = stats }
             self?.onChange?()
         }
-        s.onClosed = { [weak self] reason in
+        c.onClosed = { [weak self, weak stream] reason in
             guard let self else { return }
-            self.stream = nil
-            self.connected = false
-            self.statusText = "Not connected"
-            self.stats = nil
+            self.streams.removeAll { $0 === stream }
             self.onChange?()
             DispatchQueue.main.async {
                 // Closed on purpose: that's it (no window, so the Dock icon goes too).
@@ -133,20 +138,25 @@ final class ClientRole: NSObject {
                 if let reason { self.showConnect(reason) } else { self.windowsClosed() }
             }
         }
-        stream = s
-        s.show()
+        streams.append(stream)
+        c.show()
         onChange?()
     }
 
     func windowsClosed() {
-        if !keepRunning() && stream == nil { NSApp.terminate(nil) }
+        if !keepRunning() && streams.isEmpty { NSApp.terminate(nil) }
+    }
+
+    /// The stream the Stream menu is about: the focused stream window, else the newest.
+    private var current: Stream? {
+        streams.first { $0.controller.window.isKeyWindow } ?? streams.last
     }
 
     /// Fills the app's "Stream" menu (top menu bar) each time it opens.
     func fillStreamMenu(_ menu: NSMenu) {
         menu.removeAllItems()
-        if let stream {
-            stream.menuItems().forEach(menu.addItem)
+        if let current {
+            current.controller.menuItems().forEach(menu.addItem)
         } else {
             let item = NSMenuItem(title: "Connect…", action: #selector(connectMenu), keyEquivalent: "")
             item.target = self
@@ -155,44 +165,37 @@ final class ClientRole: NSObject {
     }
 
     @objc private func connectMenu() { showConnect(nil) }
-    @objc private func disconnect() { stream?.window.close() }
-    @objc private func showStream() {
-        stream?.window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+    @objc private func disconnect(_ sender: NSMenuItem) {
+        guard sender.tag < streams.count else { return }
+        streams[sender.tag].controller.window.close()
     }
 
-    var isActive: Bool { connected }
+    var isActive: Bool { streams.contains { $0.connected } }
 
-    /// The client part of the menu bar menu: only while connected (Open bb1 is how you connect).
+    /// The client part of the menu bar menu: one block per open stream (Open bb1 is how you connect).
     func addItems(to menu: NSMenu) {
-        guard stream != nil else { return }
-        func info(_ title: String) {
-            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            menu.addItem(item)
-        }
-        func action(_ title: String, _ symbol: String, _ selector: Selector) {
-            let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
-            item.target = self
-            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
-            menu.addItem(item)
-        }
-        if connected, let s = stats {
-            var line = statusText + String(format: " · %.0f fps", s.fps)
-            if let l = s.latencyMs { line += String(format: " · %.0f ms", l) }
-            info(line)
-        } else {
-            info(statusText)
-        }
-        if let stream {
+        for (i, stream) in streams.enumerated() {
+            if i > 0 { menu.addItem(.separator()) }
+            var line = stream.status
+            if stream.connected, let s = stream.stats {
+                line += String(format: " · %.0f fps", s.fps)
+                if let l = s.latencyMs { line += String(format: " · %.0f ms", l) }
+            }
+            let info = NSMenuItem(title: line, action: nil, keyEquivalent: "")
+            info.isEnabled = false
+            menu.addItem(info)
             let options = NSMenuItem(title: "Stream", action: nil, keyEquivalent: "")
             options.image = NSImage(systemSymbolName: "slider.horizontal.3", accessibilityDescription: nil)
             let sub = NSMenu()
             sub.autoenablesItems = false
-            stream.menuItems().forEach(sub.addItem)
+            stream.controller.menuItems().forEach(sub.addItem)
             options.submenu = sub
             menu.addItem(options)
-            action("Disconnect", "xmark.circle", #selector(disconnect))
+            let disconnect = NSMenuItem(title: "Disconnect", action: #selector(disconnect(_:)), keyEquivalent: "")
+            disconnect.target = self
+            disconnect.tag = i
+            disconnect.image = NSImage(systemSymbolName: "xmark.circle", accessibilityDescription: nil)
+            menu.addItem(disconnect)
         }
     }
 }

@@ -6,7 +6,8 @@ import BB1Core
 /// like Cmd+Tab and Cmd+Space. Those need an event tap, which needs Accessibility permission for
 /// this app. Without it, normal keys still work through an in-app monitor.
 ///
-/// One chord stays on this Mac: ⌘⎋ gives control back. Everything else goes to the host.
+/// Two kinds of chord stay on this Mac: ⌘⎋ gives control back, and Globe-Control chords (macOS window
+/// tiling, e.g. 🌐⌃← puts the stream window on the left half) arrange windows. Everything else goes to the host.
 final class KeyboardCapture {
     static let escapeKey: UInt16 = 53
 
@@ -23,6 +24,8 @@ final class KeyboardCapture {
     private var monitor: Any?
     private var retryTimer: Timer?
     private var swallowedKeyUps = Set<UInt16>()
+    /// Keys whose key-down went to this Mac (window tiling), so their key-up does too.
+    private var localKeyUps = Set<UInt16>()
     private var heldModifiers = Set<UInt16>()
     private(set) var hasSystemShortcuts = false
 
@@ -66,12 +69,18 @@ final class KeyboardCapture {
         }
     }
 
+    // The event tap holds an unretained pointer to this object: it must be gone before this is.
+    deinit { stop() }
+
     func stop() {
         retryTimer?.invalidate()
         retryTimer = nil
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
-        if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
+        if let tap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            CFMachPortInvalidate(tap)
+        }
         if let tapSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), tapSource, .commonModes) }
         tap = nil
         tapSource = nil
@@ -82,6 +91,7 @@ final class KeyboardCapture {
     func reset() {
         heldModifiers.removeAll()
         swallowedKeyUps.removeAll()
+        localKeyUps.removeAll()
     }
 
     private func installTap() {
@@ -120,6 +130,11 @@ final class KeyboardCapture {
             onCapsLock?(event.flags.contains(.maskAlphaShift))
             return Unmanaged.passUnretained(event)
         }
+        if type == .keyDown, heldModifiers.contains(63), event.flags.contains(.maskControl) {
+            localKeyUps.insert(code) // window tiling: arrange the stream window here
+            return Unmanaged.passUnretained(event)
+        }
+        if type == .keyUp, localKeyUps.remove(code) != nil { return Unmanaged.passUnretained(event) }
         if !forwardKeys() {
             // Keys stay on this Mac; only bb1's own shortcuts are taken.
             if type == .keyDown, isGiveBack(code, event.flags) {

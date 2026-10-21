@@ -329,7 +329,7 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
     let window: NSWindow
     let view: VideoView
     let connection: ClientConnection
-    private let target: ClientTarget
+    let target: ClientTarget
     private let renderer: FrameRenderer
     private var keyboard: KeyboardCapture!
     private var settings = ClientSettings.load()
@@ -367,7 +367,13 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         window.backgroundColor = .black
         window.center()
-        window.setFrameAutosaveName("bb1.stream")
+        // Only one window can own the saved position; a second stream opens a little down and to the right.
+        if let other = NSApp.windows.last(where: { $0 !== window && $0.isVisible && $0.title.hasPrefix("bb1 — ") }) {
+            window.setFrame(other.frame, display: false)
+            window.setFrameTopLeftPoint(NSPoint(x: other.frame.minX + 28, y: other.frame.maxY - 28))
+        } else {
+            window.setFrameAutosaveName("bb1.stream")
+        }
 
         let renderer = self.renderer, connection = self.connection
         // Weak: the decoder belongs to the connection, so a strong capture would keep both alive forever.

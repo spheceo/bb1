@@ -86,10 +86,13 @@ final class HostSession {
     /// Share of full quality the network carries right now (host queue; see HostController.adaptRate).
     var rate = 1.0
     var cleanSeconds = 0
-    private let paceScale = Locked(1.0)
-    func setRate(_ rate: Double) {
+    /// Burst limit for big frames (bytes/s). Full speed normally. On a constrained path (a relay, loss) a few
+    /// times the bitrate, in small steps: a Tailscale relay drops whatever doesn't fit its short queue.
+    private let pace: Locked<Double>
+    func setRate(_ rate: Double, bitrateMbps: Int) {
         self.rate = rate
-        paceScale.with { $0 = rate }
+        let constrained = min(paceBytesPerSecond, Double(max(12, bitrateMbps * 3)) * 125_000)
+        pace.with { $0 = rate >= 1 ? paceBytesPerSecond : constrained }
     }
     var dropPercent = 0.0
     let sent = Locked<UInt64>(0)
@@ -133,6 +136,7 @@ final class HostSession {
         self.keys = keys
         self.name = name
         self.paceBytesPerSecond = Double(paceMbps) * 125_000
+        pace = Locked(Double(paceMbps) * 125_000)
     }
 
     var hasVideoPath: Bool { udp.get != nil }
@@ -164,16 +168,18 @@ final class HostSession {
             // Long enough for a resend to a Mac on the other side of the world (RTT 300+ ms, a few tries).
             recent = recent.filter { now - $0.value.us < 2_000_000 }
 
-            // Bigger frames (keyframes, fast motion) are paced so a Wi-Fi hop doesn't drop the burst.
-            let pace = packets.count > 16
+            // Bigger frames (keyframes, fast motion) are paced so a Wi-Fi hop or a relay doesn't drop the burst.
+            let paceBytesPerSecond = self.pace.get
+            let constrained = paceBytesPerSecond < self.paceBytesPerSecond
+            let pace = packets.count > (constrained ? 4 : 16)
+            let step = constrained ? 8 : 32
             let start = Clock.nowUs()
-            let paceBytesPerSecond = self.paceBytesPerSecond * paceScale.get
             var bytes = 0
             for (i, packet) in packets.enumerated() {
                 if dropPercent > 0, Double.random(in: 0..<100) < dropPercent { continue }
                 connection.send(content: packet, completion: .idempotent)
                 bytes += packet.count
-                if pace, i % 32 == 31 {
+                if pace, i % step == step - 1 {
                     let targetUs = UInt64(Double(bytes) / paceBytesPerSecond * 1_000_000)
                     let elapsed = Clock.nowUs() - start
                     if targetUs > elapsed { usleep(useconds_t(targetUs - elapsed)) }
@@ -884,7 +890,8 @@ final class HostController {
     }
 
     private func setRate(_ rate: Double, for s: HostSession, because reason: String) {
-        s.setRate(rate)
+        let full = pipeline.info.map { pipeline.settings.bitrateMbps ?? StreamPipeline.defaultBitrate(width: $0.width, height: $0.height) } ?? 30
+        s.setRate(rate, bitrateMbps: max(3, Int(Double(full) * rate)))
         pipeline.setBitrateScale(rate)
         Log.info(String(format: "host: sending at %.0f%% of full quality (%@)", rate * 100, reason))
     }

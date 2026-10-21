@@ -220,6 +220,9 @@ final class ClientConnection {
             guard let self, g == self.gen else { return }
             self.keys = keys
             self.lastPongUs = Clock.nowUs()
+            // A first round-trip guess before any pong (the handshake took about two): far away, the very
+            // first keyframe wait and resend timing are already right.
+            if self.rttUs == 0 { self.rttUs = min(1_000_000, Double(self.lastPongUs - self.connectStartedUs) / 2) }
             if let build = self.control?.peerBuild {
                 let host = self.target.label
                 DispatchQueue.main.async { HostUpdates.shared.note(build: build, for: host) }
@@ -381,7 +384,8 @@ final class ClientConnection {
 
     private func requestKeyframe(_ reason: String) {
         let now = Clock.nowUs()
-        guard now - lastKeyframeRequestUs > 200_000 else { return }
+        // One request per round trip at most: asking again before the keyframe could arrive just adds big frames.
+        guard now - lastKeyframeRequestUs > max(200_000, UInt64(rttUs * 1.2)) else { return }
         lastKeyframeRequestUs = now
         counters.with { $0.keyframeRequests += 1 }
         control?.send(.requestKeyframe(reason: reason))
@@ -591,7 +595,9 @@ final class ClientConnection {
         }
         // Give a resend time to arrive from far away too (same limit as giving up on a gap).
         reassembler.expire(nowUs: now, maxAgeUs: max(250_000, UInt64(rttUs * 4) + 100_000))
-        if waitingForKeyframe, now - lastKeyframeRequestUs > 300_000 { requestKeyframe("still waiting for keyframe") }
+        if waitingForKeyframe, now - lastKeyframeRequestUs > max(300_000, UInt64(rttUs * 1.5) + 100_000) {
+            requestKeyframe("still waiting for keyframe")
+        }
 
         // Compare counters now vs ~1 s ago to find a stalled stage.
         guard now > checksResumeUs, let latest = history.last,
