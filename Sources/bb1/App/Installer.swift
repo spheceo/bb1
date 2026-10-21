@@ -2,7 +2,7 @@ import AppKit
 import BB1Core
 
 /// What scripts/install-host.sh and uninstall-host.sh used to do, done by the app itself:
-/// live in Applications, be the only copy, keep the login item pointing at this copy, and remove itself.
+/// live in Applications, be the only copy, and keep the login item pointing at this copy.
 enum Installer {
     static var appURL: URL { URL(fileURLWithPath: Bundle.main.bundlePath) }
     private static var home: String { FileManager.default.homeDirectoryForCurrentUser.path }
@@ -107,18 +107,6 @@ enum Installer {
         let deadline = Date().addingTimeInterval(4)
         while others.contains(where: { !$0.isTerminated }) && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.1)) }
         others.filter { !$0.isTerminated }.forEach { $0.forceTerminate() }
-    }
-
-    // MARK: Remove
-
-    /// Settings → Remove bb1: stop starting at login, put the app in the Trash, quit.
-    /// Pairings and logs stay in ~/Library, so reinstalling picks up where it left off.
-    static func removeFromThisMac() -> Never {
-        Log.info("install: removing bb1 from this Mac")
-        LoginItem.set(false)
-        try? FileManager.default.trashItem(at: appURL, resultingItemURL: nil)
-        // Exiting with 0 tells launchd not to restart it.
-        exit(0)
     }
 
     // MARK: Helpers

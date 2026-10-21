@@ -184,11 +184,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dashbo
 
     func setStartsAtLogin(_ on: Bool) { LoginItem.set(on) }
 
-    func removeFromThisMac() {
-        hostRole?.stop()
-        Installer.removeFromThisMac()
-    }
-
     // MARK: Menu bar
 
     private func updateIcon() {

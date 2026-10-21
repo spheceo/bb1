@@ -71,7 +71,7 @@ macOS attributes permissions to the terminal app here, so grant Screen Recording
 
 **Daily use:**
 
-Install from the `.dmg` (drag to Applications), or from source with `scripts/install.sh`. The app sets itself up: it offers to move into Applications if opened from the disk image, quits older copies, and writes the login item (`~/Library/LaunchAgents/com.bb1.host.plist`, start at login + restart after a crash) when you share the Mac. Settings → Remove bb1 undoes it.
+Install from the `.dmg` (drag to Applications), or from source with `scripts/install.sh`. The app sets itself up: it offers to move into Applications if opened from the disk image, quits older copies, and writes the login item (`~/Library/LaunchAgents/com.bb1.host.plist`, start at login + restart after a crash) when you share the Mac. To take it off a Mac, turn off Open at login in Settings, quit it and drag it to the Trash.
 
 Permissions are granted once to `BB1.app` (bundle ID `com.bb1.host`, kept from the old host app). Because every build is signed with the same certificate, they survive rebuilds.
 

@@ -13,7 +13,6 @@ protocol DashboardDelegate: AnyObject {
     var startsAtLogin: Bool { get }
     func setStartsAtLogin(_ on: Bool)
     func refreshDock()
-    func removeFromThisMac()
 }
 
 /// bb1's main window: Your Macs (live screens of your other Macs), with Settings behind the gear.
@@ -432,6 +431,12 @@ final class ComputersPage: NSView {
                 status = "Online · needs pairing"
             } else if let ms = HostPreviews.shared.latencyMs[e.name] {
                 status = "Online · \(Int(ms.rounded())) ms"
+            } else if let build = HostUpdates.shared.builds[e.name], build < HostPreviews.minimumHostBuild {
+                // Too old to send its screen. Before self-update (0) it can only be updated on that Mac.
+                status = build == 0 ? "Online · old bb1, update it there" : "Online · update to see its screen"
+                tooltip = build == 0
+                    ? "\(e.name) runs a bb1 from before updates. Install the latest bb1 on it once; after that it updates from here."
+                    : "\(e.name) has build \(build). Update it to see its screen here."
             } else {
                 status = "Online"
             }
@@ -616,16 +621,6 @@ final class SettingsPage: NSView {
         reload()
     }
 
-    @objc private func removeApp() {
-        let alert = NSAlert()
-        alert.messageText = "Remove bb1 from this Mac?"
-        alert.informativeText = "bb1 quits, stops starting at login, and moves to the Trash. Your other Macs can't connect to this one until you install it again."
-        alert.addButton(withTitle: "Remove")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        dashboard?.delegate?.removeFromThisMac()
-    }
-
     @objc private func goBack() { dashboard?.showComputers() }
 
     override func layout() {
@@ -735,9 +730,6 @@ final class SettingsPage: NSView {
                 box.heightAnchor.constraint(equalToConstant: 170),
             ])
             help.append(box)
-        }
-        if Installer.isInstalledApp {
-            help.append(row("Remove bb1", "Quits and moves it to the Trash. Pairings are kept.", small("Remove…", .secondary, #selector(removeApp))))
         }
         section("Help", "For when something isn't right.", help)
     }
