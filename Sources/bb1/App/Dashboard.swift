@@ -126,11 +126,41 @@ final class Dashboard: NSObject, NSWindowDelegate {
     /// Other Macs being updated as part of `updateEverything` (this Mac goes last).
     private(set) var updatingHosts: Set<String> = []
     private(set) var pendingRelease: AppRelease?
+    /// The other Macs in the current update, kept until it's over (for the combined progress).
+    private var updateBatch: [String] = []
+
+    /// How far one of your other Macs has got with its update (0…1).
+    static func progress(of phase: HostUpdates.Phase?) -> Double {
+        switch phase {
+        case .downloading(let p)?: return p * 0.8
+        case .installing?, .restarting?: return 0.85
+        case .waiting?: return 0.95
+        case .done?, .failed?: return 1
+        default: return 0
+        }
+    }
+
+    /// The whole update as one number, your other Macs first and then this one (nil when nothing's updating).
+    var updateProgress: Double? {
+        let thisMac: Double?
+        switch Updater.shared.state {
+        case .downloading(_, let p): thisMac = p * 0.9
+        case .installing, .restarting: thisMac = 0.95
+        default: thisMac = nil
+        }
+        guard thisMac != nil || !updatingHosts.isEmpty else { return nil }
+        // A Mac that's no longer updating has finished (failed ones count as done too).
+        let others = updateBatch.map { updatingHosts.contains($0) ? Dashboard.progress(of: HostUpdates.shared.phases[$0]) : 1 }
+        let includesThisMac = thisMac != nil || (pendingRelease.map { $0.build > BB1.build } ?? false)
+        let parts = Double(others.count) + (includesThisMac ? 1 : 0)
+        return parts > 0 ? (others.reduce(0, +) + (thisMac ?? 0)) / parts : nil
+    }
 
     /// Update your other Macs that are behind (each downloads the build itself), then this one.
     func updateEverything(_ release: AppRelease) {
         guard !Updater.shared.state.busy, updatingHosts.isEmpty else { return }
         let targets = hostsBehind(release)
+        updateBatch = targets.map(\.label)
         guard !targets.isEmpty else {
             if release.build > BB1.build { Updater.shared.install(release) }
             return
@@ -143,7 +173,12 @@ final class Dashboard: NSObject, NSWindowDelegate {
                 self.updatingHosts.remove(t.label)
                 guard self.updatingHosts.isEmpty else { return }
                 self.pendingRelease = nil
-                if release.build > BB1.build { Updater.shared.install(release) } else { self.refresh() }
+                if release.build > BB1.build {
+                    Updater.shared.install(release)
+                } else {
+                    self.updateBatch = []
+                    self.refresh()
+                }
             }
         }
         refresh()
@@ -342,15 +377,7 @@ final class ComputersPage: NSView {
         }
         if !dashboard.updatingHosts.isEmpty {
             let names = dashboard.updatingHosts.sorted()
-            let progress = names.map { name -> Double in
-                switch HostUpdates.shared.phases[name] {
-                case .downloading(let p)?: return p * 0.8
-                case .installing?, .restarting?: return 0.85
-                case .waiting?: return 0.95
-                case .done?, .failed?: return 1
-                default: return 0
-                }
-            }.reduce(0, +) / Double(names.count)
+            let progress = dashboard.updateProgress ?? 0
             pill.show(.busy(progress), "Updating \(ComputersPage.list(names)) · \(Int(progress * 100))%",
                       tooltip: "Your other Macs update first, then this one.")
             return

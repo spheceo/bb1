@@ -104,6 +104,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dashbo
         menu.delegate = self
         statusItem.menu = menu
 
+        // The menu bar icon shows update progress (this Mac's and your other Macs').
+        for name in [Updater.changed, HostUpdates.changed] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.updateIcon() }
+        }
         for name in [NSWindow.didBecomeKeyNotification, NSWindow.willCloseNotification, NSWindow.didMiniaturizeNotification] {
             NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { self?.updateDock() }
@@ -196,7 +200,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dashbo
 
     private func updateIcon() {
         guard let button = statusItem?.button else { return }
-        if hostRole?.hasProblem == true {
+        button.toolTip = nil
+        if let progress = dashboard?.updateProgress {
+            // One bar for the whole update: your other Macs first, then this one.
+            button.image = MenuBarIcon.progress(progress)
+            button.appearsDisabled = false
+            button.toolTip = "Updating · \(Int(progress * 100))%"
+        } else if hostRole?.hasProblem == true {
             button.image = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: "bb1 needs attention")
             button.appearsDisabled = false
         } else {

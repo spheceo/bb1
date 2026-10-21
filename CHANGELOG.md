@@ -6,6 +6,7 @@ offered in the app on the Nightly channel (Settings → Updates). Up to build 25
 
 ## Nightlies since v0.0.0
 
+- **Update progress in the menu bar:** while bb1 updates, the menu bar icon turns into a little screen that fills up from the left: one bar for the whole update, your other Macs first and then this one (hover for the percentage). It goes back to the bb1 mark when it's done. The Your Macs update pill shows the same number, and a Mac that finishes early no longer drops out of the count (the percentage could jump back).
 - **Signed disk image:** installer layout no longer adds Finder metadata to the app after signing. The finished disk image is mounted and its app signature checked before publishing.
 - **Builds on GitHub:** nightly and stable publishing now builds, signs and notarizes on a standard GitHub Apple Silicon runner. Both verified installer and updater files publish together; failed builds publish nothing. Local development and real Mac testing stay available. Update names, build counts and channels are preserved.
 
