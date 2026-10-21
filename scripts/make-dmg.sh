@@ -3,8 +3,6 @@
 #   scripts/make-dmg.sh <output.dmg>
 # Uses dmgbuild (lays out the window without scripting Finder), installed once into its own
 # Python environment in ~/Library/Caches/bb1/dmgbuild.
-# The disk is named " " so Finder's title bar shows no text over the window (just the disk's bb1 icon,
-# which Finder always shows); the window itself says what to do.
 set -euo pipefail
 root=${0:A:h:h}
 cd "$root"
@@ -26,5 +24,5 @@ tiffutil -cathidpicheck "$work/background.png" "$work/background@2x.png" -out "$
 rm -f "$out"
 "$venv/bin/dmgbuild" -s scripts/dmg-settings.py \
   -D app="build/bb1.app" -D background="$work/background.tiff" -D icon="Resources/AppIcon.icns" \
-  " " "$out" >/dev/null
+  "bb1" "$out" >/dev/null
 echo "==> $out ($(du -h "$out" | cut -f1))"
