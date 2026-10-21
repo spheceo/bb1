@@ -347,6 +347,7 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
     /// Status text, connected, latest stats (for the menu bar).
     var onUpdate: ((String, Bool, ClientStats?) -> Void)?
     private var endReason: String?
+    private var observers: [NSObjectProtocol] = []
 
     init(target: ClientTarget) {
         self.target = target
@@ -369,9 +370,10 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
         window.setFrameAutosaveName("bb1.stream")
 
         let renderer = self.renderer, connection = self.connection
-        connection.decoder.onFrame = { pixelBuffer, captureUs in
+        // Weak: the decoder belongs to the connection, so a strong capture would keep both alive forever.
+        connection.decoder.onFrame = { [weak connection] pixelBuffer, captureUs in
             renderer.enqueue(pixelBuffer)
-            connection.markDisplayed(captureUs: captureUs)
+            connection?.markDisplayed(captureUs: captureUs)
         }
         connection.onDisplayStall = { renderer.reset() }
         connection.onStatus = { [weak self] text, connected in
@@ -444,9 +446,9 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
         connection.setSound(settings.sound)
 
         for name in [NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification] {
-            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+            observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 self?.updateCaptureState()
-            }
+            })
         }
         updateTitle()
     }
@@ -675,9 +677,14 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
     func windowDidResignKey(_ notification: Notification) { updateCaptureState() }
 
     func windowWillClose(_ notification: Notification) {
-        NotificationCenter.default.removeObserver(self)
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers.removeAll()
         keyboard.stop()
         connection.stop()
+        // AppKit keeps the last key window alive until another becomes key. Let go of the view now, so
+        // the connection, decoder and last frame it reaches go with this window, not some time later.
+        window.makeFirstResponder(nil)
+        window.contentView = nil
         onClosed?(endReason)
         onClosed = nil
     }

@@ -10,7 +10,8 @@ Every change meant building a zip, sending it to the M4 over Taildrop, and reins
 
 - **Source:** releases on `github.com/spheceo/bb1` (public). Real releases are normal GitHub releases (tag `v<VERSION>`); test builds are pre-releases (tag `build-<N>`). The app reads the releases list, no login needed.
 - **What's "newer":** the build number (`CFBundleVersion`, the commit count), taken from the zip name `bb1-…-build<N>.zip`. VERSION stays frozen, so the version string can't be used.
-- **Test builds** are offered unless Settings → "Include test builds" is off (on by default).
+- **Channel:** Settings → Updates → Channel. Stable offers only releases, Test builds only test builds (the default, and what "Include test builds" on became). Never a downgrade: a test build newer than the latest release waits for the next one.
+- **Leftovers:** a cut-short update can leave `.bb1-update` (with the previous bb1.app) next to the app or a zip in the temp folder; the next start removes them (15 s in, after the installer's own clean-up).
 - **Install:** download, unzip next to the app, check the bundle ID, the build number, and that it satisfies this copy's designated requirement (same bundle ID and the same `bb1 Local Signing` certificate). Then a small script, started in its own session so launchd doesn't kill it, waits for the app to exit, swaps the bundles, and starts the new one: `launchctl kickstart` if bb1 is the `com.bb1.host` login item, `open` otherwise.
 - **Host:** the client opens a short control connection marked `purpose: "update"` (it doesn't touch a running stream) and sends `updateHost(build)`. The host downloads that build from GitHub itself and reports `updateStatus` (downloading with progress, installing, restarting). The client then reconnects every 2 s until the host answers with the new build.
 - **One button:** Update on the client updates every online Mac that's behind first, then this Mac.

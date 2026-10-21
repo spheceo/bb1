@@ -706,13 +706,16 @@ final class SettingsPage: NSView {
         case .installing, .restarting: status = "Installing…"; control = nil
         case .failed(let message): status = message
         }
+        if case .upToDate = updater.state, !s.testBuilds, (updater.latest?.build ?? 0) < BB1.build {
+            // Moved from test builds to Stable: nothing older is installed, the next release replaces this.
+            status = "Newer than the latest release; the next one replaces it"
+        }
         if !updater.canUpdate { status = "Development copy, doesn't update itself"; control = nil }
+        let channel = SegmentedPicker(["Stable", "Test builds"], selected: s.testBuilds ? 1 : 0,
+                                      target: self, action: #selector(channelChanged(_:)))
         section("Updates", "New builds arrive inside the app.", [
             row("bb1 \(BB1.version) · build \(BB1.build)", status, control),
-            row("Include test builds", "Every test build, not just releases", toggle(s.testBuilds) { on in
-                app.updateSettings { $0.testBuilds = on }
-                Updater.shared.check()
-            }),
+            row("Channel", s.testBuilds ? "Every test build, as soon as it's out" : "Releases only", channel),
         ])
 
         // Help
@@ -815,6 +818,13 @@ final class SettingsPage: NSView {
     @objc private func switchChanged(_ sender: ToggleSwitch) {
         switchActions[ObjectIdentifier(sender)]?(sender.isOn)
         DispatchQueue.main.async { self.reload() }
+    }
+
+    @objc private func channelChanged(_ sender: SegmentedPicker) {
+        let test = sender.selected == 1
+        dashboard?.delegate?.updateSettings { $0.testBuilds = test }
+        Updater.shared.check()
+        reload()
     }
 
     @objc private func dockChanged(_ sender: SegmentedPicker) {

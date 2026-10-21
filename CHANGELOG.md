@@ -2,10 +2,15 @@
 
 Version numbers only change the last digit, and only when the owner says to make a proper release.
 Everything in between is a test build: a GitHub pre-release `build-<N>` (`bb1-<version>-build<N>.zip`),
-offered in the app when "Include test builds" is on.
+offered in the app on the Test builds channel (Settings → Updates).
 
 ## Test builds since v0.0.0
 
+- **Disconnecting just disconnects:** closing the stream (the red button or Disconnect) no longer opens the bb1 window, so with the window closed the Dock icon goes too. If the host ends the stream or it fails, the bb1 window still opens to say why.
+- **Update channel:** Settings → Updates → Channel is Stable (releases only) or Test builds (test builds only), replacing "Include test builds". Macs that had test builds on stay on Test builds. Switching from Test builds to Stable doesn't go back to an older build; the next release replaces it.
+- **No leftovers between connections:** each disconnect left the whole connection in memory (the decoder, its buffers, the last frame), because the decoder and the connection held on to each other. Both are freed now, along with the stream window's observers. Checked with `heap`: nothing of the stream is left after closing; the host side stays flat across many connections.
+- **No leftovers between updates:** an update cut short (power off, crash) could leave `.bb1-update` with the previous bb1.app next to the app, or a downloaded zip in the temp folder; bb1 removes them on its next start. Old window-position settings from earlier builds are cleared.
+- Logs now roll over while bb1 runs (at 20 MB the log becomes `<name>.old.log`), not only at start-up, so a Mac shared for weeks doesn't grow its log without limit.
 - Menu bar menu: "Not connected" and "Connect…" are gone (Open bb1 does the same); the connection lines only appear while you're connected.
 - **Control follows the pointer:** on the host's picture, keyboard and mouse go to the host; off it (title bar, black bars, outside the window) they're this Mac's again, and back on gives the host control again. No more releasing input by hand.
 - **Simpler shortcuts:** the ⌃⌥⇧ chords are gone. ⌘⎋ gives control back without moving the pointer (the way out of full screen); the Stream menu uses normal Mac shortcuts while this Mac has control (⌃⌘F full screen, ⌘I stats).

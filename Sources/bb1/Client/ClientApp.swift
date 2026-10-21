@@ -128,9 +128,9 @@ final class ClientRole: NSObject {
             self.stats = nil
             self.onChange?()
             DispatchQueue.main.async {
-                // Closed because something went wrong: show why. Closed on purpose: stay out of the way.
-                // Back to the bb1 window after disconnecting (with the reason if something went wrong).
-                self.showConnect(reason)
+                // Closed on purpose: that's it (no window, so the Dock icon goes too).
+                // Ended by the host or by a failure: show why in the bb1 window.
+                if let reason { self.showConnect(reason) } else { self.windowsClosed() }
             }
         }
         stream = s

@@ -37,6 +37,9 @@ public enum BB1 {
 public enum Log {
     private static let lock = NSLock()
     private static var handle: FileHandle?
+    private static var written: UInt64 = 0
+    /// A log over this size moves to <name>.old.log and starts again (checked at start-up and while running).
+    private static let maxBytes: UInt64 = 20_000_000
     public private(set) static var fileURL: URL?
     private static let formatter: DateFormatter = {
         let f = DateFormatter()
@@ -54,25 +57,14 @@ public enum Log {
             .appendingPathComponent("Library/Logs/bb1", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent("\(name).log")
-        if let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int,
-           size > 20_000_000 {
-            try? FileManager.default.removeItem(at: url)
-        }
-        if !FileManager.default.fileExists(atPath: url.path) {
-            FileManager.default.createFile(atPath: url.path, contents: nil)
-        }
         lock.lock()
-        handle = try? FileHandle(forWritingTo: url)
-        handle?.seekToEndOfFile()
-        fileURL = url
+        open(url)
         lock.unlock()
     }
 
     public static func info(_ message: String) {
         lock.lock()
-        let line = Data("\(formatter.string(from: Date())) \(message)\n".utf8)
-        FileHandle.standardError.write(line)
-        handle?.write(line)
+        write(message)
         let sink = self.sink
         lock.unlock()
         sink?(message)
@@ -81,10 +73,34 @@ public enum Log {
     /// Writes to the log file only (no forwarding). For lines that came from the other side.
     public static func local(_ message: String) {
         lock.lock()
-        defer { lock.unlock() }
+        write(message)
+        lock.unlock()
+    }
+
+    /// Lock held.
+    private static func write(_ message: String) {
         let line = Data("\(formatter.string(from: Date())) \(message)\n".utf8)
         FileHandle.standardError.write(line)
         handle?.write(line)
+        written += UInt64(line.count)
+        if written > maxBytes, let url = fileURL { open(url) }
+    }
+
+    /// Lock held. Opens the log for appending, moving a full one aside first.
+    private static func open(_ url: URL) {
+        let fm = FileManager.default
+        try? handle?.close()
+        handle = nil
+        let size = ((try? fm.attributesOfItem(atPath: url.path))?[.size] as? NSNumber)?.uint64Value ?? 0
+        if size > maxBytes {
+            let old = url.deletingPathExtension().appendingPathExtension("old.log")
+            try? fm.removeItem(at: old)
+            if (try? fm.moveItem(at: url, to: old)) == nil { try? fm.removeItem(at: url) }
+        }
+        if !fm.fileExists(atPath: url.path) { fm.createFile(atPath: url.path, contents: nil) }
+        handle = try? FileHandle(forWritingTo: url)
+        written = handle.map { $0.seekToEndOfFile() } ?? 0
+        fileURL = url
     }
 }
 

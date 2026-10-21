@@ -25,8 +25,8 @@ struct UpdateError: LocalizedError {
 /// Keeps this Mac's bb1 up to date: checks GitHub releases, downloads a newer build, checks it's signed
 /// with the same certificate as this copy, swaps the app bundle and restarts. Main thread only.
 ///
-/// Builds are compared by build number (CFBundleVersion, the commit count). Test builds are GitHub
-/// pre-releases; they're offered unless "Include test builds" is off.
+/// Builds are compared by build number (CFBundleVersion, the commit count). Two channels, picked in
+/// Settings: Stable offers only releases, Test builds offers only test builds (GitHub pre-releases).
 ///
 /// Automated tests only: `BB1_UPDATE_FEED` replaces the GitHub releases URL (a file:// URL works), and
 /// `BB1_TEST_AUTO_UPDATE` installs an update as soon as one is found.
@@ -75,6 +75,10 @@ final class Updater {
             justUpdated = u
         }
         guard canUpdate, timer == nil else { return }
+        // After the installer's own clean-up (it removes its folder 3 s after starting this copy).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
+            if self?.state.busy == false { Updater.removeLeftovers() }
+        }
         check()
         // GitHub answers "nothing changed" (304) to a repeat request without counting it against the
         // hourly limit, so checking often is cheap.
@@ -107,8 +111,10 @@ final class Updater {
                 if userInitiated { self.state = .failed("Couldn't check for updates: \(error.localizedDescription)") }
             case .success(let releases):
                 self.lastChecked = Date()
-                let includeTest = AppSettings.load().testBuilds
-                self.latest = releases.filter { includeTest || !$0.isTest }.max { $0.build < $1.build }
+                let testChannel = AppSettings.load().testBuilds
+                let before = self.latest
+                self.latest = releases.filter { $0.isTest == testChannel }.max { $0.build < $1.build }
+                if self.latest != before { NotificationCenter.default.post(name: Updater.changed, object: self) }
                 if let latest = self.latest, latest.build > BB1.build {
                     if self.state != .available(latest) { Log.info("update: \(latest.title) is available (this is build \(BB1.build))") }
                     self.state = .available(latest)
@@ -117,6 +123,26 @@ final class Updater {
                     self.state = .upToDate
                 }
             }
+        }
+    }
+
+    /// An update cut short (power off, crash, quit mid-download) can leave its staging folder next to
+    /// the app, with the previous bb1.app inside it, or a downloaded zip. Nothing is installing at
+    /// start-up, so anything still there is stale.
+    private static func removeLeftovers() {
+        let fm = FileManager.default
+        let staging = URL(fileURLWithPath: Bundle.main.bundlePath).deletingLastPathComponent()
+            .appendingPathComponent(".bb1-update", isDirectory: true)
+        if fm.fileExists(atPath: staging.path) {
+            if (try? fm.removeItem(at: staging)) != nil { Log.info("update: removed a leftover \(staging.path)") }
+        }
+        let tmp = fm.temporaryDirectory
+        for name in (try? fm.contentsOfDirectory(atPath: tmp.path)) ?? [] where name.hasPrefix("bb1-update-") && name.hasSuffix(".zip") {
+            try? fm.removeItem(at: tmp.appendingPathComponent(name))
+        }
+        // Window positions saved by older builds under names nothing reads any more.
+        for key in ["NSWindow Frame bb1.dashboard", "NSWindow Frame bb1.dashboard.v2"] {
+            UserDefaults.standard.removeObject(forKey: key)
         }
     }
 

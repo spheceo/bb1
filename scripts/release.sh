@@ -61,7 +61,7 @@ if [[ "$mode" == "--release" || "$mode" == "--publish" ]]; then
 
 $notes"
   else
-    gh release create "$tag" "$dmg" "$zip" --title "Test build $build" --prerelease --notes "Test build $build (version $version). Installed copies with test builds turned on update themselves.
+    gh release create "$tag" "$dmg" "$zip" --title "Test build $build" --prerelease --notes "Test build $build (version $version). Installed copies on the Test builds channel update themselves.
 
 $notes"
   fi

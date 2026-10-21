@@ -29,7 +29,7 @@ struct AppSettings: Codable {
     var allowPairing = true
     /// Share this Mac (run the host). nil = decide from the older `mode` setting.
     var hosting: Bool?
-    /// Offer test builds (GitHub pre-releases) as updates, not just releases.
+    /// Update channel: true = test builds only (GitHub pre-releases), false = Stable (releases only).
     var testBuilds = true
 
     var isHosting: Bool { hosting ?? (mode == .host) }
