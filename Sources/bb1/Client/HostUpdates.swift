@@ -7,6 +7,7 @@ import Network
 /// A host's build is learned whenever this Mac signs in to it (streaming, or a short "update" connection
 /// that doesn't disturb a stream). Hosts from before self-update report no build (0); they have to be
 /// updated by hand once, and can't be sent an update message (they'd treat the connection as a stream).
+/// They're still re-checked now and then (just a hello), so a hand update is noticed without connecting.
 final class HostUpdates {
     static let shared = HostUpdates()
     /// Posted (main thread) whenever a build or an update's progress changes.
@@ -63,8 +64,8 @@ final class HostUpdates {
     /// yet (just paired); not for one known to be too old for update connections (build 0).
     func refresh(_ target: ClientTarget) {
         let name = target.label
-        guard HostUpdates.signsInQuietly(target), builds[name] != 0, channels[name] == nil else { return }
-        if let last = lastRefresh[name], Date().timeIntervalSince(last) < 300 { return }
+        guard HostUpdates.signsInQuietly(target), channels[name] == nil else { return }
+        if let last = lastRefresh[name], Date().timeIntervalSince(last) < (builds[name] == 0 ? 900 : 300) { return }
         lastRefresh[name] = Date()
         open(target) { [weak self] channel in
             self?.note(build: channel.peerBuild, for: target.label)
