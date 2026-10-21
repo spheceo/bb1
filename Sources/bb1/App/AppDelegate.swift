@@ -80,6 +80,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dashbo
     private var clientRole: ClientRole!
     private var dashboard: Dashboard!
     private weak var streamMenu: NSMenu?
+    /// The menu bar menu while it's open, so news (a new build) shows up without reopening it.
+    private weak var openStatusMenu: NSMenu?
 
     init(forcedMode: AppMode?, hostOptions: HostOptions, clientOptions: ClientOptions) {
         self.forcedMode = forcedMode
@@ -106,7 +108,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dashbo
 
         // The menu bar icon shows update progress (this Mac's and your other Macs').
         for name in [Updater.changed, HostUpdates.changed] {
-            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.updateIcon() }
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                guard let self else { return }
+                self.updateIcon()
+                if let menu = self.openStatusMenu { self.menuNeedsUpdate(menu) }
+            }
         }
         for name in [NSWindow.didBecomeKeyNotification, NSWindow.willCloseNotification, NSWindow.didMiniaturizeNotification] {
             NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
@@ -215,6 +221,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dashbo
             button.appearsDisabled = !(isHosting || clientRole?.isActive == true)
         }
         button.title = ""
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        guard menu === statusItem?.menu else { return }
+        openStatusMenu = menu
+        // Opening the menu is a good moment to look for a new build (at most once a minute).
+        Updater.shared.checkIfStale()
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        if menu === openStatusMenu { openStatusMenu = nil }
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
