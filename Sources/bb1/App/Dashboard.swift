@@ -362,11 +362,11 @@ final class ComputersPage: NSView {
             }
             let behind = dashboard.hostsBehind(r).map(\.label)
             let also = behind.isEmpty ? "" : " Also updates \(ComputersPage.list(behind))."
-            pill.show(.offer, "Update to \(r.shortName)", tooltip: "You have build \(BB1.build).\(also)")
+            pill.show(.offer, "Update to \(r.shortName)", tooltip: "You have \(BB1.displayName).\(also)")
             return
         }
         if let u = updater.justUpdated {
-            pill.show(.done, "Updated to build \(u.to)", tooltip: "Updated from build \(u.from).")
+            pill.show(.done, "Updated to \(BB1.isRelease ? BB1.version : BB1.buildName(u.to))", tooltip: "Updated from \(BB1.buildName(u.from)).")
             fadeOutDonePill()
             return
         }
@@ -422,7 +422,7 @@ final class ComputersPage: NSView {
         case .installing?: status = "Installing update…"; progress = 1
         case .restarting?: status = "Restarting…"; progress = 1
         case .waiting?: status = "Starting up…"; progress = 1
-        case .done(let build)?: status = "Updated to build \(build)"
+        case .done(let build)?: status = "Updated to \(BB1.buildName(build))"
         case .failed(let why)?: status = "Update didn't finish"; live = false; tooltip = why
         case nil:
             if !e.online {
@@ -436,7 +436,7 @@ final class ComputersPage: NSView {
                 status = build == 0 ? "Online · old bb1, update it there" : "Online · update to see its screen"
                 tooltip = build == 0
                     ? "\(e.name) runs a bb1 from before updates. Install the latest bb1 on it once; after that it updates from here."
-                    : "\(e.name) has build \(build). Update it to see its screen here."
+                    : "\(e.name) has \(BB1.buildName(build)). Update it to see its screen here."
             } else {
                 status = "Online"
             }
@@ -446,7 +446,7 @@ final class ComputersPage: NSView {
         if !updating, e.online, let latest = Updater.shared.latest, let target,
            let build = HostUpdates.shared.builds[e.name], build < latest.build, HostUpdates.canUpdate(target, build: build) {
             badge = phase == nil ? "Update" : "Retry update"
-            tooltip = tooltip ?? "\(e.name) has build \(build). Update it to \(latest.title.lowercasedFirst)."
+            tooltip = tooltip ?? "\(e.name) has \(BB1.buildName(build)). Update it to \(latest.title.lowercasedFirst)."
         }
         return MacTile.Model(name: MacNames.display(e.name), status: status, live: live, image: preview?.image, dim: !e.online,
                              action: e.online && target != nil && !updating ? (pairing ? "Pair" : "Connect") : nil,
@@ -725,16 +725,16 @@ final class SettingsPage: NSView {
         case .installing, .restarting: status = "Installing…"; control = nil
         case .failed(let message): status = message
         }
-        if case .upToDate = updater.state, !s.testBuilds, (updater.latest?.build ?? 0) < BB1.build {
-            // Moved from test builds to Stable: nothing older is installed, the next release replaces this.
+        if case .upToDate = updater.state, !s.nightly, (updater.latest?.build ?? 0) < BB1.build {
+            // Moved from Nightly to Stable: nothing older is installed, the next release replaces this.
             status = "Newer than the latest release; the next one replaces it"
         }
         if !updater.canUpdate { status = "Development copy, doesn't update itself"; control = nil }
-        let channel = SegmentedPicker(["Stable", "Test builds"], selected: s.testBuilds ? 1 : 0,
+        let channel = SegmentedPicker(["Stable", "Nightly"], selected: s.nightly ? 1 : 0,
                                       target: self, action: #selector(channelChanged(_:)))
         section("Updates", "New builds arrive inside the app.", [
-            row("bb1 \(BB1.version) · build \(BB1.build)", status, control),
-            row("Channel", s.testBuilds ? "Every test build, as soon as it's out" : "Releases only", channel),
+            row(BB1.displayName, status, control),
+            row("Channel", s.nightly ? "Every nightly, as soon as it's out" : "Releases only", channel),
         ])
 
         // Help
@@ -840,8 +840,8 @@ final class SettingsPage: NSView {
     }
 
     @objc private func channelChanged(_ sender: SegmentedPicker) {
-        let test = sender.selected == 1
-        dashboard?.delegate?.updateSettings { $0.testBuilds = test }
+        let nightly = sender.selected == 1
+        dashboard?.delegate?.updateSettings { $0.nightly = nightly }
         Updater.shared.check()
         reload()
     }

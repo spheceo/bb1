@@ -681,7 +681,7 @@ final class HostController {
     private func updateRequested(_ build: Int, by channel: ControlChannel) {
         Log.info("host: \(channel.peerName) asked this Mac to update from build \(BB1.build) to \(build)")
         if let s = session, s.control !== channel {
-            s.control.send(.notice("bb1 on this Mac is updating to build \(build). It will be back in a moment."))
+            s.control.send(.notice("bb1 on this Mac is updating to \(BB1.buildName(build)). It will be back in a moment."))
         }
         let reply: (UpdateStatusMsg) -> Void = { [weak self, weak channel] status in
             self?.queue.async { channel?.send(.updateStatus(status)) }

@@ -141,7 +141,7 @@ final class HostUpdates {
                     self.set(name, .done(channel.peerBuild))
                     finished?(true)
                 } else {
-                    self.set(name, .failed("\(name) restarted but is still on build \(channel.peerBuild)"))
+                    self.set(name, .failed("\(name) restarted but is still on \(BB1.buildName(channel.peerBuild))"))
                     finished?(false)
                 }
             }, closed: { [weak self] _ in

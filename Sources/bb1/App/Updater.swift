@@ -2,18 +2,18 @@ import AppKit
 import BB1Core
 import Security
 
-/// One build of bb1 published on GitHub: a release, or a test build (marked pre-release).
+/// One build of bb1 published on GitHub: a release, or a nightly (marked pre-release).
 struct AppRelease: Equatable {
     var build: Int
     var version: String
-    var isTest: Bool
+    var isNightly: Bool
     var zipURL: URL
     var pageURL: URL
     var size: Int
 
-    var title: String { isTest ? "Test build \(build)" : "bb1 \(version)" }
-    /// "build 13" for a test build, "0.0.1" for a release ("Update to …").
-    var shortName: String { isTest ? "build \(build)" : version }
+    var title: String { isNightly ? "bb1 \(BB1.buildName(build))" : "bb1 \(version)" }
+    /// "nightly-3" for a nightly, "0.0.1" for a release ("Update to …").
+    var shortName: String { isNightly ? BB1.buildName(build) : version }
 }
 
 struct UpdateError: LocalizedError {
@@ -26,7 +26,7 @@ struct UpdateError: LocalizedError {
 /// with the same certificate as this copy, swaps the app bundle and restarts. Main thread only.
 ///
 /// Builds are compared by build number (CFBundleVersion, the commit count). Two channels, picked in
-/// Settings: Stable offers only releases, Test builds offers only test builds (GitHub pre-releases).
+/// Settings: Stable offers only releases, Nightly offers only nightlies (GitHub pre-releases).
 ///
 /// Automated tests only: `BB1_UPDATE_FEED` replaces the GitHub releases URL (a file:// URL works), and
 /// `BB1_TEST_AUTO_UPDATE` installs an update as soon as one is found.
@@ -111,9 +111,9 @@ final class Updater {
                 if userInitiated { self.state = .failed("Couldn't check for updates: \(error.localizedDescription)") }
             case .success(let releases):
                 self.lastChecked = Date()
-                let testChannel = AppSettings.load().testBuilds
+                let nightlyChannel = AppSettings.load().nightly
                 let before = self.latest
-                self.latest = releases.filter { $0.isTest == testChannel }.max { $0.build < $1.build }
+                self.latest = releases.filter { $0.isNightly == nightlyChannel }.max { $0.build < $1.build }
                 if self.latest != before { NotificationCenter.default.post(name: Updater.changed, object: self) }
                 if let latest = self.latest, latest.build > BB1.build {
                     if self.state != .available(latest) { Log.info("update: \(latest.title) is available (this is build \(BB1.build))") }
@@ -215,7 +215,7 @@ final class Updater {
     /// Host: a client asked for this exact build. Look it up on GitHub, then install it.
     func installBuild(_ build: Int, report: @escaping (UpdateStatusMsg) -> Void) {
         guard build > BB1.build else {
-            report(UpdateStatusMsg(phase: "upToDate", detail: "Already on build \(BB1.build)"))
+            report(UpdateStatusMsg(phase: "upToDate", detail: "Already on \(BB1.buildName(BB1.build))"))
             return
         }
         guard !state.busy else { report(UpdateStatusMsg(phase: "failed", detail: "An update is already running")); return }
@@ -226,7 +226,7 @@ final class Updater {
                 report(UpdateStatusMsg(phase: "failed", detail: "Couldn't reach GitHub: \(error.localizedDescription)"))
             case .success(let releases):
                 guard let release = releases.first(where: { $0.build == build }) else {
-                    report(UpdateStatusMsg(phase: "failed", detail: "Build \(build) isn't on GitHub"))
+                    report(UpdateStatusMsg(phase: "failed", detail: "\(BB1.buildName(build)) isn't on GitHub"))
                     return
                 }
                 self.install(release, report: report)
@@ -388,7 +388,7 @@ final class Updater {
             guard !r.draft else { return nil }
             for a in r.assets {
                 guard let (version, build) = zipName(a.name) else { continue }
-                return AppRelease(build: build, version: version, isTest: r.prerelease, zipURL: a.browser_download_url,
+                return AppRelease(build: build, version: version, isNightly: r.prerelease, zipURL: a.browser_download_url,
                                   pageURL: r.html_url, size: a.size)
             }
             return nil

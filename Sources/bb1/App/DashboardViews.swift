@@ -357,7 +357,7 @@ final class UpdatePill: NSButton {
 }
 
 extension String {
-    /// "Test build 9" → "test build 9", for use mid-sentence.
+    /// "Update to …" → "update to …", for use mid-sentence.
     var lowercasedFirst: String { prefix(1).lowercased() + dropFirst() }
 }
 

@@ -6,7 +6,7 @@ The bar is Parsec: crisp image, input that feels local. The thing Parsec got wro
 
 ## Status
 
-**Version 0.0.0 (first release), in daily testing.** Newer test builds arrive as in-app updates. One app, **BB1.app**, runs as host or client. The host streams its screen with mouse/keyboard control; lost packets are resent, the clipboard is shared both ways, both sides recover from stalls by themselves, and all logs end up on the host. To try it, follow **[TESTING.md](TESTING.md)**.
+**Version 0.0.0 (first release), in daily testing.** Nightlies (bb1 nightly-1, nightly-2, …) arrive as in-app updates. One app, **BB1.app**, runs as host or client. The host streams its screen with mouse/keyboard control; lost packets are resent, the clipboard is shared both ways, both sides recover from stalls by themselves, and all logs end up on the host. To try it, follow **[TESTING.md](TESTING.md)**.
 
 Built so far: roadmap M1 (video), M2 (input), most of M3 (watchdogs, recovery, fault injection) and part of M5 (pairing key, encryption). Not yet tested on the real M1 → M4 Wi-Fi path.
 

@@ -29,8 +29,13 @@ struct AppSettings: Codable {
     var allowPairing = true
     /// Share this Mac (run the host). nil = decide from the older `mode` setting.
     var hosting: Bool?
-    /// Update channel: true = test builds only (GitHub pre-releases), false = Stable (releases only).
-    var testBuilds = true
+    /// Update channel: true = Nightly (GitHub pre-releases only), false = Stable (releases only).
+    var nightly = true
+
+    enum CodingKeys: String, CodingKey {
+        case mode, dockIcon, keepRunning, allowTailscale, allowPairing, hosting
+        case nightly = "testBuilds" // its name before nightlies, kept so the choice carries over
+    }
 
     var isHosting: Bool { hosting ?? (mode == .host) }
 
@@ -44,7 +49,7 @@ struct AppSettings: Codable {
         allowTailscale = try c.decodeIfPresent(Bool.self, forKey: .allowTailscale) ?? true
         allowPairing = try c.decodeIfPresent(Bool.self, forKey: .allowPairing) ?? true
         hosting = try c.decodeIfPresent(Bool.self, forKey: .hosting)
-        testBuilds = try c.decodeIfPresent(Bool.self, forKey: .testBuilds) ?? true
+        nightly = try c.decodeIfPresent(Bool.self, forKey: .nightly) ?? true
     }
 
     private static var url: URL { BB1.supportDirectory().appendingPathComponent("settings.json") }
@@ -249,7 +254,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dashbo
             action("Diagnostics", "stethoscope", nil).submenu = more
         }
         menu.addItem(.separator())
-        info("bb1 \(BB1.version) · build \(BB1.build)\(Updater.shared.justUpdated != nil ? " · just updated" : "")")
+        info("\(BB1.displayName)\(Updater.shared.justUpdated != nil ? " · just updated" : "")")
         action("Quit bb1", "xmark.square", #selector(NSApplication.terminate(_:)), key: "q").target = nil
     }
 

@@ -12,6 +12,21 @@ public enum BB1 {
         (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String).flatMap(Int.init) ?? 0
     }
 
+    /// Builds after this one are nightlies, numbered from 1 (build 26 = nightly-1). Updates still compare
+    /// build numbers; the number in the name is just for people.
+    public static let nightlyBase = 25
+
+    /// "nightly-3" (the test builds before nightlies: "build 25").
+    public static func buildName(_ build: Int) -> String {
+        build > nightlyBase ? "nightly-\(build - nightlyBase)" : "build \(build)"
+    }
+
+    /// A proper release (stamped into Info.plist by scripts/bundle.sh), not a nightly.
+    public static var isRelease: Bool { Bundle.main.object(forInfoDictionaryKey: "BB1Release") as? Bool ?? false }
+
+    /// "bb1 0.0.1" for a release, "bb1 nightly-3" for a nightly.
+    public static var displayName: String { isRelease ? "bb1 \(version)" : "bb1 \(buildName(build))" }
+
     /// 2: packet retransmission (NACK), client log forwarding, clipboard. 3: sound.
     /// 4: remembered pairings, Tailscale sign-in, 6-digit pairing codes, forward-secret key exchange.
     /// Hosts still accept version 1–3 clients (pairing key); newer features need both sides.
