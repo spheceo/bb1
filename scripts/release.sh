@@ -60,7 +60,7 @@ if [[ "$mode" == "--release" || "$mode" == "--publish" ]]; then
   git tag "$tag"
   git push -q origin "$tag"
   if [[ "$mode" == "--release" ]]; then
-    gh release create "$tag" "$dmg" "$zip" --title "bb1 $version" --latest --notes "Download the .dmg, open it and drag bb1 into Applications. Installed copies update themselves.
+    gh release create "$tag" "$dmg" "$zip" --title "bb1 v$version" --latest --notes "Download the .dmg, open it and drag bb1 into Applications. Installed copies update themselves.
 
 $notes"
   else

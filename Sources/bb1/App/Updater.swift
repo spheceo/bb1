@@ -11,9 +11,9 @@ struct AppRelease: Equatable {
     var pageURL: URL
     var size: Int
 
-    var title: String { isNightly ? "bb1 \(BB1.buildName(build))" : "bb1 \(version)" }
-    /// "nightly-3" for a nightly, "0.0.1" for a release ("Update to …").
-    var shortName: String { isNightly ? BB1.buildName(build) : version }
+    var title: String { "bb1 \(shortName)" }
+    /// "nightly-3" for a nightly, "v0.0.1" for a release ("Update to …").
+    var shortName: String { isNightly ? BB1.buildName(build) : "v\(version)" }
 }
 
 struct UpdateError: LocalizedError {

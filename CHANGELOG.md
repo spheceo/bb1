@@ -6,7 +6,8 @@ offered in the app on the Nightly channel (Settings → Updates). Up to build 25
 
 ## Nightlies since v0.0.0
 
-- **Test builds are now nightlies:** the next one is **bb1 nightly-1** (build 26), then nightly-2, … The update channel is Stable / Nightly, and bb1 calls itself "bb1 nightly-1" (or "bb1 0.0.1" once it's a release) in Settings, the menu bar and the update pill. Your channel choice carries over, and copies on build 25 or older still find nightlies (updates still compare build numbers).
+- **Releases are written with a v:** "bb1 v0.0.1", in the app (Settings, menu bar, update pill) and on GitHub. The v0.0.0 release on GitHub is now titled "bb1 v0.0.0" too.
+- **Test builds are now nightlies:** the next one is **bb1 nightly-1** (build 26), then nightly-2, … The update channel is Stable / Nightly, and bb1 calls itself "bb1 nightly-1" (or "bb1 v0.0.1" once it's a release) in Settings, the menu bar and the update pill. Your channel choice carries over, and copies on build 25 or older still find nightlies (updates still compare build numbers).
 - **Fixed a crash with two streams open:** opening a second stream let go of the first stream's window controller while its window stayed up, and its keyboard hook still pointed at it; the next key press (here a window-tiling shortcut) crashed bb1. Now every open stream is kept, the keyboard hook is torn down with its window, and a hook can never outlive its owner.
 - **Several streams at once:** connect to more than one Mac and each gets its own window (connecting to a Mac that's already open brings its window forward). The menu bar shows each stream with its own Stream options and Disconnect. A second window opens a little down and to the right of the first.
 - **Window tiling works over a stream:** Globe-Control chords (🌐⌃← left half, 🌐⌃→ right half, 🌐⌃F fill, …) stay on this Mac, so you can put two streams side by side. ⌘⎋ and these are the only keys that don't go to the host.

@@ -366,7 +366,7 @@ final class ComputersPage: NSView {
             return
         }
         if let u = updater.justUpdated {
-            pill.show(.done, "Updated to \(BB1.isRelease ? BB1.version : BB1.buildName(u.to))", tooltip: "Updated from \(BB1.buildName(u.from)).")
+            pill.show(.done, "Updated to \(BB1.isRelease ? "v\(BB1.version)" : BB1.buildName(u.to))", tooltip: "Updated from \(BB1.buildName(u.from)).")
             fadeOutDonePill()
             return
         }

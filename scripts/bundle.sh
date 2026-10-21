@@ -21,7 +21,7 @@ cp "Resources/Info.plist" "$app/Contents/Info.plist"
 version=$(cat VERSION)
 build=$(git rev-list --count HEAD 2>/dev/null || echo 1)
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" -c "Set :CFBundleVersion $build" "$app/Contents/Info.plist"
-# A proper release says so (the app shows "bb1 0.0.1" instead of "bb1 nightly-N").
+# A proper release says so (the app shows "bb1 v0.0.1" instead of "bb1 nightly-N").
 [[ -n "${BB1_RELEASE:-}" ]] && /usr/libexec/PlistBuddy -c "Add :BB1Release bool true" "$app/Contents/Info.plist"
 cp "Resources/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"   # made by scripts/make-icon.swift
 

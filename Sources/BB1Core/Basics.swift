@@ -24,8 +24,8 @@ public enum BB1 {
     /// A proper release (stamped into Info.plist by scripts/bundle.sh), not a nightly.
     public static var isRelease: Bool { Bundle.main.object(forInfoDictionaryKey: "BB1Release") as? Bool ?? false }
 
-    /// "bb1 0.0.1" for a release, "bb1 nightly-3" for a nightly.
-    public static var displayName: String { isRelease ? "bb1 \(version)" : "bb1 \(buildName(build))" }
+    /// "bb1 v0.0.1" for a release, "bb1 nightly-3" for a nightly.
+    public static var displayName: String { isRelease ? "bb1 v\(version)" : "bb1 \(buildName(build))" }
 
     /// 2: packet retransmission (NACK), client log forwarding, clipboard. 3: sound.
     /// 4: remembered pairings, Tailscale sign-in, 6-digit pairing codes, forward-secret key exchange.
