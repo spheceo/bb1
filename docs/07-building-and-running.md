@@ -7,11 +7,11 @@ Everything builds with the Command Line Tools that are already installed (Swift 
 - **Build:** Swift Package Manager (`swift build`). One `Package.swift` at the repo root.
 - **Editor:** anything. VS Code / Cursor with the Swift extension works well.
 - **Debugger:** `lldb`, included with the Command Line Tools.
-- **Signing:** from nightly-6, **Developer ID Application: SIPHESIHLE GODSGIFT MBUYISA (5PLDN9BDV4)** (paid Apple Developer Program), with the hardened runtime and a secure timestamp. Published builds and their disk image are notarized by Apple and stapled, so a new Mac opens them without a warning. Without the Developer ID installed, `bundle.sh` falls back to **bb1 Local Signing**, a self-signed certificate that `scripts/signing-identity.sh` creates once.
+- **Signing:** published builds use **Developer ID Application: SIPHESIHLE GODSGIFT MBUYISA (5PLDN9BDV4)** (paid Apple Developer Program), with the hardened runtime and a secure timestamp. Published builds and their disk image are notarized by Apple and stapled, so a new Mac opens them without a warning. Without the Developer ID installed, `bundle.sh` falls back to **bb1 Local Signing**, a self-signed certificate that `scripts/signing-identity.sh` creates once.
 
-  Both live in bb1's own keychain, `~/Library/Application Support/bb1/signing/bb1-signing.keychain-db` (password in `keychain-password` next to it, so builds never prompt). The Developer ID private key was made on the M1 (`developer-id/`), never uploaded; the certificate expires 2027-11-20. To renew: make a new request from that key (or a new one), create a Developer ID Application certificate at developer.apple.com, import it into that keychain. The updater trusts any bb1 signed by team 5PLDN9BDV4, so renewals don't break updates or permissions.
+  Both live in bb1's own keychain, `~/Library/Application Support/bb1/signing/bb1-signing.keychain-db` (password in `keychain-password` next to it, so builds never prompt). The Developer ID private key was made on the M1 (`developer-id/`); an encrypted `.p12` copy is stored as a GitHub Actions secret for release builds; the certificate expires 2027-11-20. To renew: make a new request from that key (or a new one), create a Developer ID Application certificate at developer.apple.com, import it into that keychain. The updater trusts any bb1 signed by team 5PLDN9BDV4, so renewals don't break updates or permissions.
 
-  Notarization uses the keychain profile `bb1-notary` (`xcrun notarytool store-credentials bb1-notary --apple-id … --team-id 5PLDN9BDV4`, with an app-specific password). `release.sh --publish` / `--release` submit the app, staple it, then sign, submit and staple the `.dmg`.
+  Local notarization uses the keychain profile `bb1-notary` (an app-specific password). GitHub uses the existing team API key also used by Edit, with its Key ID and Issuer ID stored as repository secrets. Rotating that shared API key means updating both repositories. Both the app and disk image are notarized and stapled before a GitHub release becomes visible.
 
   > Why not the Apple Development certificate: as of 2026-10-20 all of this account's Apple Development certificates are **revoked**, and Development certificates aren't for distribution anyway.
 
@@ -77,7 +77,7 @@ macOS attributes permissions to the terminal app here, so grant Screen Recording
 
 Install from the `.dmg` (drag to Applications), or from source with `scripts/install.sh`. The app sets itself up: it offers to move into Applications if opened from the disk image, quits older copies, and writes the login item (`~/Library/LaunchAgents/com.bb1.host.plist`, start at login + restart after a crash) when you share the Mac. To take it off a Mac, turn off Open at login in Settings, quit it and drag it to the Trash.
 
-Permissions are granted once to `BB1.app` (bundle ID `com.bb1.host`, kept from the old host app). Because every build has the same signature identity (bundle ID + Developer ID team), they survive updates. Moving from the local certificate to the Developer ID (nightly-6) asked for them once more.
+Permissions are granted once to `BB1.app` (bundle ID `com.bb1.host`, kept from the old host app). Because every build has the same signature identity (bundle ID + Developer ID team), they survive updates. Moving from the local certificate to the Developer ID asks for them once more. Install the nightly-5 bridge before the first Developer ID update.
 
 Don't open the apps straight from `build/`. `~/Documents` is a privacy-protected folder, and a signed app inside it hangs at launch waiting for permission to read its own files. Both Macs keep bb1 in `/Applications`.
 
@@ -85,4 +85,26 @@ An `.app` is just a folder (`BB1.app/Contents/MacOS/bb1` + `Contents/Info.plist`
 
 ## Getting the client onto another Mac
 
-Same bundle script. The M4 doesn't trust the local certificate, which is fine for running it. Because it isn't notarized, the copied app needs its quarantine flag removed once (see [TESTING.md](../TESTING.md)). Sharing with other people would need a paid Developer ID and notarization; out of scope for now.
+Use the published disk image from GitHub Releases. Its app and disk image are signed with the Developer ID, notarized, and stapled. Keep local development builds for debugging; they are not notarized unless explicitly requested.
+
+
+## GitHub builds and publishing
+
+The public repository uses a standard Apple Silicon `macos-26` runner. Routine builds do not need either personal Mac online. Real Screen Recording, Accessibility, multi-window input, streaming performance, and Tailscale checks still happen on the M1 and M4.
+
+- **Local development package:** `scripts/release.sh` makes a signed `.app`, `.dmg`, and update `.zip` in `build/` and `dist/`, without publishing or notarizing. For an explicit local notarization check: `BB1_NOTARIZE=1 scripts/release.sh`.
+- **Test the full GitHub pipeline:** Actions → Release → Run workflow (or `gh workflow run release.yml`). By default it signs and notarizes, verifies Gatekeeper and stapled tickets, and keeps the files as seven-day Actions artifacts. It never creates a release. Untick notarization only to diagnose compilation/packaging while Apple is slow; those files are not publishable.
+- **Publish a nightly:** commit changes and the changelog on `main`, then `scripts/release.sh --publish`. This pushes main and its `nightly-N` tag. GitHub builds and publishes the DMG and updater ZIP together. It no longer compiles on the local Mac.
+- **Publish a stable version:** only at the owner's request, bump `VERSION`, add its `## v<VERSION>` changelog entry, commit, then `scripts/release.sh --release`. GitHub stamps `BB1Release` and publishes the normal latest release.
+- **Failure:** a failed build, signature, notarization, or verification publishes nothing. If an upload fails, the release stays a draft. Fix the problem and rerun as appropriate; already public releases are never overwritten. Notarization submission IDs and results are retained separately even on failure.
+
+The workflow fetches full history so the commit count and existing updater filenames remain unchanged. The ZIP always has `bb1.app` at its top level; nightly ZIPs remain `bb1-<VERSION>-build<N>.zip`, and stable ZIPs remain `bb1-v<VERSION>-build<N>.zip`. Nightly number = build count − 25. Nightlies remain pre-releases and do not replace the latest stable release.
+
+Repository secrets (never commit these files):
+
+- `MACOS_CERTIFICATE`: base64 of bb1's Developer ID certificate/private key as an encrypted `.p12` (not Edit's signing certificate).
+- `MACOS_CERTIFICATE_PASSWORD`: that export's password.
+- `NOTARY_KEY`: base64 of the team notarization API `.p8` key.
+- `NOTARY_KEY_ID` and `NOTARY_ISSUER`: the API identifiers.
+
+The runner imports signing material into a temporary keychain and deletes it and the API key even after a failed job. Missing credentials stop the job; published builds cannot fall back to local or ad-hoc signing. Build steps have read-only repository permission; only the final publishing job can write a release.

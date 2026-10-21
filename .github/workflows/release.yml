@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    tags: ['nightly-*', 'v*']
+  workflow_dispatch:
+    inputs:
+      notarize:
+        description: 'Notarize and verify with Apple (test build only; never publishes)'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 120
+    env:
+      BB1_RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || '' }}
+      BB1_NOTARIZE: ${{ github.event_name == 'push' && '1' || inputs.notarize && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Release safety checks
+        run: python3 scripts/test-release-guards.py
+      - name: Protocol and crypto checks
+        run: swift run bb1-selftest
+      - name: Import signing and notarization credentials
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
+        run: scripts/ci-signing.sh
+      - name: Build, sign, package, and verify
+        run: scripts/release.sh --ci
+      - name: Keep verified deliverables
+        uses: actions/upload-artifact@v7
+        with:
+          name: bb1-macos-arm64
+          path: dist/
+          retention-days: 7
+          if-no-files-found: error
+      - name: Keep notarization receipts even if Apple is slow or rejects a build
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: notarization-receipts
+          path: build/notary/
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Remove runner credentials
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/bb1-signing/signing.keychain-db" 2>/dev/null || true
+          rm -rf "$RUNNER_TEMP/bb1-signing"
+
+  publish:
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      BB1_RELEASE_TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v8
+        with:
+          name: bb1-macos-arm64
+          path: dist
+      - name: Publish both files together
+        run: scripts/ci-publish.sh

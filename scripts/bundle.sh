@@ -27,17 +27,26 @@ cp "Resources/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"   # made by s
 
 # Developer ID (Apple-issued) when it's installed: hardened runtime and a secure timestamp, which
 # notarization needs. Otherwise the local certificate. BB1_SIGN_IDENTITY overrides both.
-local_identity=$(scripts/signing-identity.sh)
-developer_id=$(scripts/signing-identity.sh --developer-id)
-identity=${BB1_SIGN_IDENTITY:-${developer_id:-$local_identity}}
+if [[ -n "${BB1_SIGN_IDENTITY:-}" ]]; then
+  identity=$BB1_SIGN_IDENTITY
+elif [[ "${CI:-}" == true ]]; then
+  echo "!! CI requires an explicitly imported Developer ID; refusing a fallback signature." >&2
+  exit 1
+else
+  local_identity=$(scripts/signing-identity.sh)
+  developer_id=$(scripts/signing-identity.sh --developer-id)
+  identity=${developer_id:-$local_identity}
+fi
 if [[ -z "$identity" ]]; then
   echo "!! Couldn't set up a signing certificate; signing ad-hoc."
   echo "!! macOS will forget this app's permissions every time you rebuild."
   identity="-"
 fi
 echo "==> Signing with $identity"
+keychain_args=()
+[[ -n "${BB1_SIGN_KEYCHAIN:-}" ]] && keychain_args=(--keychain "$BB1_SIGN_KEYCHAIN")
 if [[ "$identity" == "Developer ID Application:"* ]]; then
-  codesign --force --sign "$identity" --options runtime --timestamp "$app"
+  codesign --force --sign "$identity" "${keychain_args[@]}" --options runtime --timestamp "$app"
 else
   codesign --force --sign "$identity" --timestamp=none "$app"
 fi

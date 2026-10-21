@@ -6,6 +6,8 @@ offered in the app on the Nightly channel (Settings → Updates). Up to build 25
 
 ## Nightlies since v0.0.0
 
+- **Builds on GitHub:** nightly and stable publishing now builds, signs and notarizes on a standard GitHub Apple Silicon runner. Both verified installer and updater files publish together; failed builds publish nothing. Local development and real Mac testing stay available. Update names, build counts and channels are preserved.
+
 - **Getting ready for Apple signing:** this nightly is still signed with bb1's local certificate, but its updater also accepts bb1 signed with the owner's Apple Developer ID (team 5PLDN9BDV4). The next nightly is signed with the Developer ID and notarized by Apple. The build scripts now use the Developer ID when it's installed (hardened runtime, secure timestamp) and notarize and staple published builds and the disk image. They also no longer garble the keychain search list (an earlier version could merge its entries into one broken path).
 - **Cleaner disk image:** the "bb1" wordmark in the top-left corner of the window is gone; the name stays in Finder's title bar (Finder always shows that bar).
 - **Releases are written with a v:** "bb1 v0.0.1", in the app (Settings, menu bar, update pill) and on GitHub. The v0.0.0 release on GitHub is now titled "bb1 v0.0.0" too.

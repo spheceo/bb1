@@ -26,5 +26,5 @@ Every change meant building a zip, sending it to the M4 over Taildrop, and reins
 ## Consequences
 
 - Hello messages carry `appBuild` (and the client's `purpose`). A host that reports no build is older than self-update: it has to be updated by hand once, and is never sent update messages (it would treat an update connection as a stream).
-- Publishing: `scripts/release.sh --publish` (nightly) or `--release` (real release, only when the owner says). Both push the branch and the tag first.
+- Publishing: `scripts/release.sh --publish` (nightly) or `--release` (real release, only when the owner says). Both push main and the tag, then GitHub Actions builds, signs, notarizes and publishes both files together. Full git history preserves the build number; incomplete releases stay hidden as drafts.
 - Test hooks: `BB1_UPDATE_FEED` (a local releases JSON) and `BB1_TEST_AUTO_UPDATE`.
