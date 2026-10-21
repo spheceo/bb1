@@ -30,6 +30,7 @@ final class ScreenSource: NSObject, FrameSource, SCStreamOutput, SCStreamDelegat
     private var stream: SCStream?
     private var config: SCStreamConfiguration?
     private var stopped = false
+    private var reportedStop = false
     private var onFrame: ((CVPixelBuffer, UInt64) -> Void)?
     private var onStop: ((String) -> Void)?
     private let audioQueue = DispatchQueue(label: "bb1.audio", qos: .userInteractive)
@@ -120,8 +121,13 @@ final class ScreenSource: NSObject, FrameSource, SCStreamOutput, SCStreamDelegat
         }
         guard type == .screen, sampleBuffer.isValid,
               let attachments = (CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]])?.first,
-              let rawStatus = attachments[.status] as? Int,
-              SCFrameStatus(rawValue: rawStatus) == .complete,
+              let rawStatus = attachments[.status] as? Int else { return }
+        // macOS stopped the stream. This frame arrives seconds before didStopWithError, so restart now.
+        if SCFrameStatus(rawValue: rawStatus) == .stopped {
+            reportStop("capture stopped: the system ended the stream")
+            return
+        }
+        guard SCFrameStatus(rawValue: rawStatus) == .complete,
               let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         var captureUs = Clock.nowUs()
         if let displayTime = attachments[.displayTime] as? UInt64 { captureUs = Clock.machToUs(displayTime) }
@@ -129,10 +135,14 @@ final class ScreenSource: NSObject, FrameSource, SCStreamOutput, SCStreamDelegat
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        queue.async {
-            guard !self.stopped else { return }
-            self.onStop?("capture stopped: \(error.localizedDescription)")
-        }
+        queue.async { self.reportStop("capture stopped: \(error.localizedDescription) (\((error as NSError).code))") }
+    }
+
+    /// Once per stream, on the pipeline queue.
+    private func reportStop(_ reason: String) {
+        guard !stopped, !reportedStop else { return }
+        reportedStop = true
+        onStop?(reason)
     }
 }
 

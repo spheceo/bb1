@@ -6,6 +6,7 @@ offered in the app when "Include test builds" is on.
 
 ## Test builds since v0.0.0
 
+- **Faster recovery when macOS stops screen capture:** the host restarts capture as soon as macOS signals it (about 3 s sooner than before). On a nearly full disk, macOS's space clean-up (`replayd`) stops every screen capture; when that happens, or at connect, the client is told the host is low on disk space (under 5 GB free). Host notices on the stream now fade after 10 s, apart from "The host can't…" warnings.
 - **Remove bb1 is gone from Settings** (turn off Open at login and drag bb1 to the Trash instead).
 - A Mac too old to send its screen now says so on its tile instead of just "Online": "Online · update to see its screen", or for a bb1 from before updates, "Online · old bb1, update it there" (it has to be installed by hand once). Such a Mac is re-checked every 15 minutes, so once it's updated by hand its screen shows up without connecting to it first.
 - **New Settings page:** five sections (Sharing, Who can connect, App, Updates, Help), each a short title and one line on the left with its settings grouped in one card on the right, divided by hairlines. Shorter wording, small buttons, and a segmented picker for the Dock icon instead of a macOS pop-up menu.

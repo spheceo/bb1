@@ -76,6 +76,8 @@ final class HostSession {
     let connectedAt = Date()
     var lastPingUs = Clock.nowUs()
     var config: StreamConfig?
+    /// Told the client this Mac is low on disk space.
+    var warnedLowDisk = false
 
     private let sendQueue = DispatchQueue(label: "bb1.send", qos: .userInteractive)
     private let udp = Locked<NWConnection?>(nil)
@@ -292,6 +294,10 @@ final class HostController {
         pipeline.onAudio = { [weak self] sample in
             guard let self, self.session?.audioEnabled.get == true else { return }
             self.audio.add(sample)
+        }
+        pipeline.onCaptureStopped = { [weak self] _ in
+            guard let self else { return }
+            self.queue.async { if let s = self.session { self.warnIfLowOnDisk(s) } }
         }
         pipeline.onStreamInfo = { [weak self] info in
             guard let self else { return }
@@ -593,6 +599,7 @@ final class HostController {
         if let error = pipeline.counters.get.lastError {
             channel.send(.notice(error))
         }
+        warnIfLowOnDisk(s)
         activity = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiated, .latencyCritical, .idleSystemSleepDisabled, .idleDisplaySleepDisabled],
             reason: "bb1 is streaming to \(s.name)")
@@ -634,6 +641,21 @@ final class HostController {
                 channel?.send(.preview(preview))
             }
         }
+    }
+
+    /// When the disk is nearly full, macOS stops screen capture while it frees up space (the picture
+    /// freezes for a moment). Say why, once per session.
+    private func warnIfLowOnDisk(_ s: HostSession) {
+        guard !s.warnedLowDisk, let free = HostController.freeDiskBytes, free < 5_000_000_000 else { return }
+        s.warnedLowDisk = true
+        let gb = String(format: "%.1f GB", Double(free) / 1_000_000_000)
+        Log.info("host: low on disk space (\(gb) free); macOS interrupts screen capture while it frees space")
+        s.control.send(.notice("\(hostName) is almost out of disk space (\(gb) free). While macOS frees up space it pauses screen sharing, so the picture can freeze for a few seconds. Free up some space on \(hostName) to fix it."))
+    }
+
+    static var freeDiskBytes: Int64? {
+        let values = try? URL(fileURLWithPath: NSHomeDirectory()).resourceValues(forKeys: [.volumeAvailableCapacityKey])
+        return values?.volumeAvailableCapacity.map(Int64.init)
     }
 
     private func updateRequested(_ build: Int, by channel: ControlChannel) {

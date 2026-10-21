@@ -261,8 +261,13 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
             self?.onPairedHost?()
         }
         connection.onNotice = { [weak self] text in
-            self?.notice = text
-            self?.refreshOverlay()
+            // "The host can't…" stays until it's fixed; anything else is just news.
+            if text.hasPrefix("The host") {
+                self?.notice = text
+                self?.refreshOverlay()
+            } else {
+                self?.flash(text, for: 10)
+            }
         }
         connection.onStats = { [weak self] s in
             guard let self else { return }
@@ -443,10 +448,10 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
 
     @objc func disconnect() { window.close() }
 
-    private func flash(_ text: String) {
+    private func flash(_ text: String, for seconds: Double = 2) {
         notice = text
         refreshOverlay()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
             guard let self, self.notice == text else { return }
             self.notice = nil
             self.refreshOverlay()

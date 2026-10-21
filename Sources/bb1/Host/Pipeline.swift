@@ -51,6 +51,8 @@ final class StreamPipeline {
     var onEncodedFrame: ((EncodedFrame) -> Void)?
     /// Audio queue. System sound from the capture stream.
     var onAudio: ((CMSampleBuffer) -> Void)?
+    /// Pipeline queue. macOS stopped the screen capture (it restarts by itself).
+    var onCaptureStopped: ((String) -> Void)?
     /// Pipeline queue. Called when resolution/codec/epoch changes.
     var onStreamInfo: ((StreamInfo) -> Void)?
 
@@ -228,6 +230,7 @@ final class StreamPipeline {
         }, onStop: { [weak self] reason in
             guard let self, gen == self.generation else { return }
             Log.info("pipeline: \(reason)")
+            self.onCaptureStopped?(reason)
             self.scheduleCaptureRetry(reason)
         }, completion: { [weak self] result in
             guard let self, gen == self.generation else { return }
