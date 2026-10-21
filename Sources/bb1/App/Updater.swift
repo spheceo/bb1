@@ -141,7 +141,7 @@ final class Updater {
             try? fm.removeItem(at: tmp.appendingPathComponent(name))
         }
         // Window positions saved by older builds under names nothing reads any more.
-        for key in ["NSWindow Frame bb1.dashboard", "NSWindow Frame bb1.dashboard.v2"] {
+        for key in ["NSWindow Frame bb1.dashboard", "NSWindow Frame bb1.dashboard.v2", "NSWindow Frame bb1.dashboard.v3"] {
             UserDefaults.standard.removeObject(forKey: key)
         }
     }

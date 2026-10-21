@@ -85,6 +85,12 @@ final class VideoEncoder {
 
     deinit { invalidate() }
 
+    /// Change the target bitrate without a new keyframe (the network can carry more or less right now).
+    func setBitrate(_ mbps: Int) {
+        guard let session else { return }
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: NSNumber(value: mbps * 1_000_000))
+    }
+
     func invalidate() {
         guard let session else { return }
         VTCompressionSessionInvalidate(session)

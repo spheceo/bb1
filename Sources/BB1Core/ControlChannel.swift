@@ -213,7 +213,8 @@ public final class ControlChannel {
 
     // MARK: Handshake
 
-    private var remoteAddress: String? {
+    /// The other end's IP address ("100.82.185.25").
+    public var remoteAddress: String? {
         if case .hostPort(let host, _)? = connection.currentPath?.remoteEndpoint { return "\(host)" }
         if case .hostPort(let host, _) = connection.endpoint { return "\(host)" }
         return nil

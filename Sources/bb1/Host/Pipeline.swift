@@ -70,6 +70,8 @@ final class StreamPipeline {
     private var epoch: UInt16 = 0
     private var lastBuffer: CVPixelBuffer?
     private var forceKeyframe = true
+    /// The share of the full bitrate the network carries right now (0.15…1, set by the host).
+    private var bitrateScale = 1.0
     private var lastKeyframeRequestUs: UInt64 = 0
     private var refreshWork: DispatchWorkItem?
     // Fault injection (debug menu / signals), to prove each recovery path works.
@@ -289,7 +291,7 @@ final class StreamPipeline {
         encoder?.invalidate()
         encoder = nil
         epoch &+= 1
-        let bitrate = settings.bitrateMbps ?? StreamPipeline.defaultBitrate(width: width, height: height)
+        let bitrate = bitrate(width: width, height: height)
         do {
             let e = try VideoEncoder(width: width, height: height, preferred: settings.codec,
                                      bitrateMbps: bitrate, fps: settings.fps, epoch: epoch)
@@ -309,6 +311,21 @@ final class StreamPipeline {
         } catch {
             Log.info("pipeline: \(error.localizedDescription)")
             counters.with { $0.lastError = error.localizedDescription }
+        }
+    }
+
+    private func bitrate(width: Int, height: Int) -> Int {
+        let full = settings.bitrateMbps ?? StreamPipeline.defaultBitrate(width: width, height: height)
+        return max(3, Int((Double(full) * bitrateScale).rounded()))
+    }
+
+    /// Send less (or more again) to match what the network carries. Takes effect on the next frame.
+    func setBitrateScale(_ scale: Double) {
+        queue.async {
+            guard scale != self.bitrateScale else { return }
+            self.bitrateScale = scale
+            guard let encoder = self.encoder else { return }
+            encoder.setBitrate(self.bitrate(width: encoder.width, height: encoder.height))
         }
     }
 

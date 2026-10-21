@@ -393,16 +393,7 @@ final class MacTile: NSView {
     private let progress = ProgressLine()
     private lazy var actionButton = PillButton("Connect", kind: .primary, target: self, action: #selector(clicked))
     private lazy var badgeButton = PillButton("Update", kind: .overlay, target: self, action: #selector(badgeClicked))
-    private lazy var menuButton: NSButton = {
-        let b = NSButton(image: NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "More")!
-            .withSymbolConfiguration(.init(pointSize: 12, weight: .bold))!, target: self, action: #selector(menuClicked))
-        b.isBordered = false
-        b.wantsLayer = true
-        b.layer?.cornerRadius = 13
-        b.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.6).cgColor
-        b.contentTintColor = .white
-        return b
-    }()
+    private lazy var menuButton = GlassCircleButton(symbol: "ellipsis", tooltip: "More") { [weak self] in self?.menuClicked() }
     private var model: Model?
     private var hovering = false { didSet { restyle() } }
     private var area: NSTrackingArea?
@@ -456,8 +447,8 @@ final class MacTile: NSView {
             badgeButton.topAnchor.constraint(equalTo: topAnchor, constant: 12),
             menuButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             menuButton.topAnchor.constraint(equalTo: topAnchor, constant: 12),
-            menuButton.widthAnchor.constraint(equalToConstant: 26),
-            menuButton.heightAnchor.constraint(equalToConstant: 26),
+            menuButton.widthAnchor.constraint(equalToConstant: GlassCircleButton.size),
+            menuButton.heightAnchor.constraint(equalToConstant: GlassCircleButton.size),
         ])
     }
 
@@ -519,6 +510,11 @@ final class MacTile: NSView {
         let a = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
         addTrackingArea(a)
         area = a
+        // A tile that moved out from under the pointer gets no mouseExited: check where the pointer really is.
+        if let window {
+            let inside = bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
+            if inside != hovering { hovering = inside }
+        }
     }
 
     override func mouseEntered(with event: NSEvent) { hovering = true }
@@ -531,7 +527,7 @@ final class MacTile: NSView {
 
     @objc private func clicked() { if model?.action != nil { onClick?() } }
     @objc private func badgeClicked() { onBadge?() }
-    @objc private func menuClicked() {
+    private func menuClicked() {
         guard let menu = makeMenu?() else { return }
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: menuButton.bounds.height + 4), in: menuButton)
     }
@@ -542,92 +538,101 @@ final class MacTile: NSView {
     }
 }
 
-/// This Mac, last on the page: the bb1 mark (solid while shared), and the sharing switch.
-final class ThisMacTile: NSView {
-    var onToggle: ((Bool) -> Void)?
-    var onFix: (() -> Void)?
-
-    private let markView = NSImageView()
-    private let name = Style.label("This Mac", size: 14.5, weight: .semibold)
-    private let status = NSTextField(labelWithString: "")
-    private let toggle = ToggleSwitch()
-    private lazy var fix = PillButton("Allow Access…", kind: .primary, target: self, action: #selector(fixClicked))
-    private let dash = CAShapeLayer()
-
+/// Your Macs with no other Macs yet: what to do next.
+final class EmptyState: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
-        wantsLayer = true
-        layer?.cornerRadius = 16
-        dash.fillColor = nil
-        dash.strokeColor = NSColor.white.withAlphaComponent(0.16).cgColor
-        dash.lineWidth = 1
-        dash.lineDashPattern = [5, 4]
-        layer?.addSublayer(dash)
-        markView.imageScaling = .scaleNone
-        status.font = .systemFont(ofSize: 12)
-        status.lineBreakMode = .byTruncatingTail
-        status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        toggle.target = self
-        toggle.action = #selector(toggled)
-        fix.small = true
-        // The mark sits in the middle of the area above the footer.
-        let art = NSLayoutGuide()
-        addLayoutGuide(art)
-        for v in [markView, name, status, toggle, fix] as [NSView] {
+        let mark = NSImageView(image: NSImage(size: NSSize(width: 64, height: 51), flipped: false) { rect in
+            ComputerArt.drawMark(in: rect.insetBy(dx: 1, dy: 1), opacity: 0.22)
+            return true
+        })
+        let title = Style.label("No other Macs yet", size: 15, weight: .semibold)
+        let detail = Style.label("Turn on Share This Mac in bb1 on another Mac signed in to your Tailscale,\nor add one by its address with +.",
+                                 size: 12.5, color: NSColor.white.withAlphaComponent(0.45))
+        detail.alignment = .center
+        detail.lineBreakMode = .byWordWrapping
+        detail.maximumNumberOfLines = 0
+        let stack = NSStackView(views: [mark, title, detail])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 8
+        stack.setCustomSpacing(18, after: mark)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.topAnchor.constraint(equalTo: topAnchor),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+}
+
+/// A round button floating on a picture (the ⋯ on a Mac): Liquid Glass on macOS 26, a blurred disc before.
+/// A plain view, not an NSButton, so it stays exactly round.
+final class GlassCircleButton: NSView {
+    static let size: CGFloat = 28
+    private let onClick: () -> Void
+    private let icon = NSImageView()
+    private var area: NSTrackingArea?
+    private var hovering = false { didSet { icon.contentTintColor = .white.withAlphaComponent(hovering ? 1 : 0.85) } }
+
+    init(symbol: String, tooltip: String, onClick: @escaping () -> Void) {
+        self.onClick = onClick
+        super.init(frame: NSRect(x: 0, y: 0, width: GlassCircleButton.size, height: GlassCircleButton.size))
+        toolTip = tooltip
+        icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tooltip)?
+            .withSymbolConfiguration(.init(pointSize: 12, weight: .bold))
+        icon.contentTintColor = .white.withAlphaComponent(0.85)
+        let background: NSView
+        if #available(macOS 26.0, *) {
+            let glass = NSGlassEffectView()
+            glass.cornerRadius = GlassCircleButton.size / 2
+            glass.style = .clear
+            glass.tintColor = NSColor.black.withAlphaComponent(0.22)
+            background = glass
+        } else {
+            let blur = NSVisualEffectView()
+            blur.material = .hudWindow
+            blur.blendingMode = .withinWindow
+            blur.state = .active
+            blur.wantsLayer = true
+            blur.layer?.cornerRadius = GlassCircleButton.size / 2
+            blur.layer?.masksToBounds = true
+            background = blur
+        }
+        for v in [background, icon] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
         NSLayoutConstraint.activate([
-            art.topAnchor.constraint(equalTo: topAnchor),
-            art.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -MacTile.footerHeight),
-            markView.centerXAnchor.constraint(equalTo: centerXAnchor),
-            markView.centerYAnchor.constraint(equalTo: art.centerYAnchor),
-            name.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
-            name.topAnchor.constraint(equalTo: bottomAnchor, constant: -MacTile.footerHeight + 13),
-            name.trailingAnchor.constraint(lessThanOrEqualTo: toggle.leadingAnchor, constant: -10),
-            status.leadingAnchor.constraint(equalTo: name.leadingAnchor),
-            status.topAnchor.constraint(equalTo: name.bottomAnchor, constant: 3),
-            status.trailingAnchor.constraint(lessThanOrEqualTo: toggle.leadingAnchor, constant: -10),
-            toggle.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
-            toggle.centerYAnchor.constraint(equalTo: bottomAnchor, constant: -MacTile.footerHeight / 2),
-            toggle.widthAnchor.constraint(equalToConstant: 36),
-            toggle.heightAnchor.constraint(equalToConstant: 20),
-            fix.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
-            fix.centerYAnchor.constraint(equalTo: toggle.centerYAnchor),
+            background.leadingAnchor.constraint(equalTo: leadingAnchor),
+            background.trailingAnchor.constraint(equalTo: trailingAnchor),
+            background.topAnchor.constraint(equalTo: topAnchor),
+            background.bottomAnchor.constraint(equalTo: bottomAnchor),
+            icon.centerXAnchor.constraint(equalTo: centerXAnchor),
+            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    override func layout() {
-        super.layout()
-        dash.frame = bounds
-        dash.path = CGPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), cornerWidth: 16, cornerHeight: 16, transform: nil)
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let area { removeTrackingArea(area) }
+        let a = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+        addTrackingArea(a)
+        area = a
     }
 
-    func configure(shared: Bool, status text: String, live: Bool, problem: Bool) {
-        markView.image = ThisMacTile.mark(solid: shared)
-        let line = NSMutableAttributedString()
-        if live {
-            line.append(NSAttributedString(string: "● ", attributes: [.foregroundColor: Style.online, .font: NSFont.systemFont(ofSize: 9)]))
-        }
-        line.append(NSAttributedString(string: text, attributes: [
-            .foregroundColor: NSColor.white.withAlphaComponent(0.5), .font: NSFont.systemFont(ofSize: 12)]))
-        status.attributedStringValue = line
-        toggle.isOn = shared
-        toggle.isHidden = problem
-        fix.isHidden = !problem
-    }
-
-    @objc private func toggled() { onToggle?(toggle.isOn) }
-    @objc private func fixClicked() { onFix?() }
-
-    private static func mark(solid: Bool) -> NSImage {
-        NSImage(size: NSSize(width: 64, height: 51), flipped: false) { rect in
-            ComputerArt.drawMark(in: rect.insetBy(dx: 1, dy: 1), opacity: solid ? 1 : 0.22)
-            return true
-        }
-    }
+    override func mouseEntered(with event: NSEvent) { hovering = true }
+    override func mouseExited(with event: NSEvent) { hovering = false }
+    override func hitTest(_ point: NSPoint) -> NSView? { frame.contains(point) ? self : nil }
+    override func mouseDown(with event: NSEvent) { onClick() }
+    override func mouseUp(with event: NSEvent) {}
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .arrow) }
 }
 
 /// A round icon button (the gear in the header): just the symbol, with a soft circle behind it on hover.

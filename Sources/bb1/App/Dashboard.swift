@@ -15,6 +15,16 @@ protocol DashboardDelegate: AnyObject {
     func refreshDock()
 }
 
+/// Names you gave your other Macs, on this Mac only (keyed by the name each Mac announces).
+enum MacNames {
+    static var custom: [String: String] {
+        get { UserDefaults.standard.dictionary(forKey: "bb1.customNames") as? [String: String] ?? [:] }
+        set { UserDefaults.standard.set(newValue, forKey: "bb1.customNames") }
+    }
+
+    static func display(_ name: String) -> String { custom[name] ?? name }
+}
+
 /// bb1's main window: Your Macs (live screens of your other Macs), with Settings behind the gear.
 final class Dashboard: NSObject, NSWindowDelegate {
     enum Page { case computers, settings }
@@ -31,7 +41,9 @@ final class Dashboard: NSObject, NSWindowDelegate {
 
     init(delegate: DashboardDelegate) {
         self.delegate = delegate
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 680),
+        // Three Macs across at the card size that reads best (~390 pt), on any screen that fits it.
+        let screen = NSScreen.main?.visibleFrame.size ?? NSSize(width: 1440, height: 900)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: min(1300, screen.width - 80), height: min(820, screen.height - 60)),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                           backing: .buffered, defer: false)
         super.init()
@@ -49,7 +61,7 @@ final class Dashboard: NSObject, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.minSize = NSSize(width: 640, height: 480)
-        window.setFrameAutosaveName("bb1.dashboard.v3")
+        window.setFrameAutosaveName("bb1.dashboard.v4")
         window.contentView = content
         window.center()
         directory.onChange = { [weak self] _ in self?.refresh() }
@@ -165,7 +177,7 @@ final class ComputersPage: NSView {
     private let message = Style.label("", size: 12, color: .secondaryLabelColor)
     private var entries: [HostDirectory.Entry] = []
     private var tiles: [String: MacTile] = [:]
-    private let thisMac = ThisMacTile()
+    private let empty = EmptyState()
     /// Header items line up with the window buttons; set in `layout()` once those exist.
     private var brandCenter: NSLayoutConstraint!
     private var brandLeading: NSLayoutConstraint!
@@ -202,9 +214,21 @@ final class ComputersPage: NSView {
         add.isBordered = false
         add.contentTintColor = NSColor.white.withAlphaComponent(0.4)
         add.toolTip = "Connect by address"
-        let titleRow = NSStackView(views: [title, add])
-        titleRow.spacing = 10
-        titleRow.alignment = .centerY
+        // The + sits on the middle of the lowercase letters, where the eye reads the title's centre.
+        let titleRow = NSView()
+        for v in [title, add] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            titleRow.addSubview(v)
+        }
+        let titleFont = NSFont.systemFont(ofSize: 30, weight: .bold)
+        NSLayoutConstraint.activate([
+            title.leadingAnchor.constraint(equalTo: titleRow.leadingAnchor),
+            title.topAnchor.constraint(equalTo: titleRow.topAnchor),
+            title.bottomAnchor.constraint(equalTo: titleRow.bottomAnchor),
+            add.leadingAnchor.constraint(equalTo: title.trailingAnchor, constant: 10),
+            add.trailingAnchor.constraint(equalTo: titleRow.trailingAnchor),
+            add.centerYAnchor.constraint(equalTo: title.firstBaselineAnchor, constant: -round(titleFont.xHeight / 2)),
+        ])
 
         let scroll = NSScrollView()
         scroll.drawsBackground = false
@@ -214,10 +238,10 @@ final class ComputersPage: NSView {
         doc.translatesAutoresizingMaskIntoConstraints = false
         flow.translatesAutoresizingMaskIntoConstraints = false
         flow.spacing = 20
-        // Big screens: two across in a normal window, one when narrow, three when wide.
+        // Cards stay about the same size; a wider window fits more of them across.
         flow.adaptive = { width in
             let gap: CGFloat = 20
-            let columns = max(1, min(3, Int((width + gap) / (340 + gap))))
+            let columns = max(1, Int((width + gap) / (360 + gap)))
             let w = floor((width - CGFloat(columns - 1) * gap) / CGFloat(columns))
             return (columns, NSSize(width: w, height: floor(w * 10 / 16) + MacTile.footerHeight))
         }
@@ -231,7 +255,7 @@ final class ComputersPage: NSView {
             doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
         ])
 
-        for v in [brand, corner, titleRow, scroll, message] as [NSView] {
+        for v in [brand, corner, titleRow, scroll, empty, message] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
@@ -250,14 +274,11 @@ final class ComputersPage: NSView {
             message.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 40),
             message.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -40),
             message.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -14),
+            empty.centerXAnchor.constraint(equalTo: scroll.centerXAnchor),
+            empty.centerYAnchor.constraint(equalTo: scroll.centerYAnchor, constant: -30),
+            empty.widthAnchor.constraint(lessThanOrEqualTo: scroll.widthAnchor),
         ])
 
-        thisMac.onToggle = { [weak self] on in
-            guard let app = self?.dashboard?.delegate else { return }
-            app.setHosting(on)
-            self?.reload()
-        }
-        thisMac.onFix = { [weak self] in self?.dashboard?.showSettings() }
         for name in [Updater.changed, HostUpdates.changed, HostPreviews.changed] {
             NotificationCenter.default.addObserver(self, selector: #selector(updatesChanged), name: name, object: nil)
         }
@@ -280,7 +301,7 @@ final class ComputersPage: NSView {
     func setMessage(_ text: String) { message.stringValue = text }
 
     func reload() {
-        guard let dashboard, let app = dashboard.delegate else { return }
+        guard let dashboard else { return }
         entries = dashboard.directory.entries
         avatar.set(name: dashboard.directory.tailscaleName, picture: dashboard.directory.tailscalePicture)
 
@@ -298,9 +319,8 @@ final class ComputersPage: NSView {
                HostPreviews.canPreview(target, build: HostUpdates.shared.builds[e.name]) { previewTargets.append(target) }
         }
         tiles = tiles.filter { name, _ in entries.contains { $0.name == name } }
-        configureThisMac(app)
-        views.append(thisMac)
         flow.setItems(views)
+        empty.isHidden = !entries.isEmpty
         if window?.isVisible == true { HostPreviews.shared.keepFresh(previewTargets) }
         for e in entries where e.online {
             if let target = ComputersPage.target(for: e) { HostUpdates.shared.refresh(target) }
@@ -387,26 +407,6 @@ final class ComputersPage: NSView {
 
     // MARK: Tiles
 
-    private func configureThisMac(_ app: DashboardDelegate) {
-        var status = "Not shared"
-        var live = false
-        var problem = false
-        if app.isHosting {
-            if app.hostRole?.hasProblem == true {
-                status = "Needs permissions"
-                problem = true
-            } else if let client = app.hostRole?.host.status().clientName {
-                status = "\(client) is connected"
-                live = true
-            } else {
-                status = app.startsAtLogin ? "Shared · starts at login" : "Shared"
-                live = true
-            }
-        }
-        thisMac.configure(shared: app.isHosting, status: status, live: live, problem: problem)
-        thisMac.toolTip = "\(DeviceIdentity.name) · build \(BB1.build)"
-    }
-
     private func model(for e: HostDirectory.Entry) -> MacTile.Model {
         let target = ComputersPage.target(for: e)
         let pairing: Bool = { if case .code? = target?.auth { return true }; return false }()
@@ -448,7 +448,7 @@ final class ComputersPage: NSView {
             badge = phase == nil ? "Update" : "Retry update"
             tooltip = tooltip ?? "\(e.name) has build \(build). Update it to \(latest.title.lowercasedFirst)."
         }
-        return MacTile.Model(name: e.name, status: status, live: live, image: preview?.image, dim: !e.online,
+        return MacTile.Model(name: MacNames.display(e.name), status: status, live: live, image: preview?.image, dim: !e.online,
                              action: e.online && target != nil && !updating ? (pairing ? "Pair" : "Connect") : nil,
                              progress: progress, badge: badge, tooltip: tooltip)
     }
@@ -484,14 +484,18 @@ final class ComputersPage: NSView {
             home.state = ComputersPage.usesTailscale(e) ? .off : .on
             for item in [ts, home] { item.target = self; item.tag = index; menu.addItem(item) }
         }
+        if !menu.items.isEmpty { menu.addItem(.separator()) }
+        let rename = NSMenuItem(title: "Rename…", action: #selector(rename(_:)), keyEquivalent: "")
+        rename.target = self
+        rename.tag = index
+        menu.addItem(rename)
         if e.known != nil {
-            if !menu.items.isEmpty { menu.addItem(.separator()) }
             let forget = NSMenuItem(title: "Forget This Mac", action: #selector(forget(_:)), keyEquivalent: "")
             forget.target = self
             forget.tag = index
             menu.addItem(forget)
         }
-        return menu.items.isEmpty ? nil : menu
+        return menu
     }
 
     // MARK: Actions
@@ -506,6 +510,27 @@ final class ComputersPage: NSView {
         guard sender.tag < entries.count else { return }
         ComputersPage.preferHome[entries[sender.tag].name] = true
         reload()
+    }
+
+    @objc private func rename(_ sender: NSMenuItem) {
+        guard sender.tag < entries.count, let window else { return }
+        let name = entries[sender.tag].name
+        let alert = NSAlert()
+        alert.messageText = "Rename \(MacNames.display(name))"
+        alert.informativeText = "Only on this Mac. Leave it empty to go back to “\(name)”."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.stringValue = MacNames.display(name)
+        field.placeholderString = name
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            let new = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            MacNames.custom[name] = new.isEmpty || new == name ? nil : new
+            self?.reload()
+        }
     }
 
     @objc private func forget(_ sender: NSMenuItem) {
@@ -546,12 +571,6 @@ final class ComputersPage: NSView {
             guard let target = options.target() else { self.setMessage("That address doesn't look right."); return }
             self.dashboard?.delegate?.connect(target)
         }
-    }
-
-    @objc private func toggleSharing() {
-        guard let app = dashboard?.delegate else { return }
-        app.setHosting(!app.isHosting)
-        reload()
     }
 
     @objc private func openSettings() { dashboard?.show(.settings) }

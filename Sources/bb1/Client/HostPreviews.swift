@@ -29,6 +29,8 @@ final class HostPreviews {
         let channel: ControlChannel
         var timer: Timer?
         var sentAt: Date?
+        /// The host answers pings (build 24+), so latency is the real round trip, not the picture's download.
+        var answersPings = false
         init(channel: ControlChannel) { self.channel = channel }
     }
     private var sessions: [String: Session] = [:]
@@ -78,8 +80,12 @@ final class HostPreviews {
             }
         }
         channel.onMessage = { [weak self, weak session] message in
-            guard let self, let session, case .preview(let preview) = message else { return }
-            self.received(preview, from: name, session: session)
+            guard let self, let session else { return }
+            switch message {
+            case .preview(let preview): self.received(preview, from: name, session: session)
+            case .pong(let pong): self.received(pong, from: name, session: session)
+            default: break
+            }
         }
         channel.onClose = { [weak self, weak session] _ in
             guard let self, let session, self.sessions[name] === session else { return }
@@ -97,12 +103,20 @@ final class HostPreviews {
     }
 
     private func request(_ session: Session) {
+        session.channel.send(.ping(PingMsg(seq: 0, clientUs: Clock.nowUs(), received: 0, decoded: 0, displayed: 0)))
         session.sentAt = Date()
         session.channel.send(.requestPreview(maxWidth: HostPreviews.maxWidth))
     }
 
+    private func received(_ pong: PongMsg, from name: String, session: Session) {
+        session.answersPings = true
+        let now = Clock.nowUs()
+        latencyMs[name] = max(1, Double(now > pong.clientUs ? now - pong.clientUs : 0) / 1000)
+        NotificationCenter.default.post(name: HostPreviews.changed, object: self)
+    }
+
     private func received(_ preview: PreviewMsg, from name: String, session: Session) {
-        if let sent = session.sentAt {
+        if let sent = session.sentAt, !session.answersPings {
             latencyMs[name] = max(1, Date().timeIntervalSince(sent) * 1000 - preview.captureMs)
         }
         failedAt[name] = nil

@@ -416,7 +416,7 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
             guard let self else { return }
             self.lastStats = s
             self.refreshOverlay()
-            if self.connected { self.onUpdate?("Connected to \(target.label)", true, s) }
+            if self.connected { self.onUpdate?("Connected to \(MacNames.display(target.label))", true, s) }
         }
         connection.onEnded = { [weak self] reason in
             self?.endReason = reason
@@ -524,7 +524,7 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
     }
 
     private func updateTitle() {
-        window.title = "bb1 — \(target.label)"
+        window.title = "bb1 — \(MacNames.display(target.label))"
         // Hide this Mac's cursor over the picture only while it's actually driving the host's cursor.
         view.hideLocalCursor = settings.cursorInVideo && settings.input.mouse && isCapturing
     }

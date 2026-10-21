@@ -83,6 +83,14 @@ final class HostSession {
     private let udp = Locked<NWConnection?>(nil)
     private var nextFrameId: UInt32 = 1
     private let paceBytesPerSecond: Double
+    /// Share of full quality the network carries right now (host queue; see HostController.adaptRate).
+    var rate = 1.0
+    var cleanSeconds = 0
+    private let paceScale = Locked(1.0)
+    func setRate(_ rate: Double) {
+        self.rate = rate
+        paceScale.with { $0 = rate }
+    }
     var dropPercent = 0.0
     let sent = Locked<UInt64>(0)
     let sentBytes = Locked<UInt64>(0)
@@ -153,11 +161,13 @@ final class HostSession {
 
             let now = Clock.nowUs()
             recent[frameId] = (now, packets)
-            recent = recent.filter { now - $0.value.us < 500_000 }
+            // Long enough for a resend to a Mac on the other side of the world (RTT 300+ ms, a few tries).
+            recent = recent.filter { now - $0.value.us < 2_000_000 }
 
             // Bigger frames (keyframes, fast motion) are paced so a Wi-Fi hop doesn't drop the burst.
             let pace = packets.count > 16
             let start = Clock.nowUs()
+            let paceBytesPerSecond = self.paceBytesPerSecond * paceScale.get
             var bytes = 0
             for (i, packet) in packets.enumerated() {
                 if dropPercent > 0, Double.random(in: 0..<100) < dropPercent { continue }
@@ -600,6 +610,7 @@ final class HostController {
             channel.send(.notice(error))
         }
         warnIfLowOnDisk(s)
+        startGentlyIfRelayed(s)
         activity = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiated, .latencyCritical, .idleSystemSleepDisabled, .idleDisplaySleepDisabled],
             reason: "bb1 is streaming to \(s.name)")
@@ -620,6 +631,9 @@ final class HostController {
             switch message {
             case .updateHost(let build): self.updateRequested(build, by: channel)
             case .requestPreview(let maxWidth): self.sendPreview(maxWidth: maxWidth, to: channel)
+            case .ping(let p): // the dashboard's latency check
+                channel.send(.pong(PongMsg(seq: p.seq, clientUs: p.clientUs, hostUs: Clock.nowUs(), captured: 0,
+                                           encoded: 0, sent: 0, encodeAvgUs: 0, hostRecoveries: 0)))
             default: break
             }
         }
@@ -848,6 +862,45 @@ final class HostController {
                         usage.cpuPercent, usage.memoryMB))
         statsBaseline = (sent, bytes, c.captured, c.encoded, c.keyframes, nacks, resent)
         input = (0, 0, 0, 0)
+        adaptRate(s, packets: (bytes &- b.bytes) / 1200, resent: resent &- b.resent)
+    }
+
+    /// Lost packets mean we're sending more than the path carries (a relay, a far-away Mac, busy Wi-Fi):
+    /// back off fast, then creep back up while nothing is lost. Lower bitrate and gentler bursts.
+    private func adaptRate(_ s: HostSession, packets: UInt64, resent: UInt64) {
+        var rate = s.rate
+        if resent >= max(4, packets / 50) {
+            rate = max(0.15, rate * 0.7)
+            s.cleanSeconds = 0
+        } else {
+            s.cleanSeconds += 1
+            if s.cleanSeconds >= 4 && rate < 1 {
+                rate = min(1, rate * 1.15)
+                s.cleanSeconds = 2
+            }
+        }
+        guard rate != s.rate else { return }
+        setRate(rate, for: s, because: rate < s.rate ? "\(resent) packets resent" : "no loss")
+    }
+
+    private func setRate(_ rate: Double, for s: HostSession, because reason: String) {
+        s.setRate(rate)
+        pipeline.setBitrateScale(rate)
+        Log.info(String(format: "host: sending at %.0f%% of full quality (%@)", rate * 100, reason))
+    }
+
+    /// Over a Tailscale relay, start at a rate a relay can carry instead of losing the first keyframe.
+    private func startGentlyIfRelayed(_ s: HostSession) {
+        guard let address = s.control.remoteAddress, Tailscale.isTailscaleIP(address) else { return }
+        DispatchQueue.global().async { [weak self] in
+            guard let path = Tailscale.pathDescription(to: address, in: Tailscale.status()) else { return }
+            Log.info("host: \(s.name) is connected via Tailscale, \(path)")
+            guard path.hasPrefix("relayed") else { return }
+            self?.queue.async {
+                guard let self, self.session === s, s.rate > 0.4 else { return }
+                self.setRate(0.4, for: s, because: "Tailscale relay")
+            }
+        }
     }
 
     private func watchDisplayChanges() {

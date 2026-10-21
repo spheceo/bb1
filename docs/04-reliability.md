@@ -67,6 +67,14 @@ When the screen is changing (for example, input just arrived on the host), the f
 
 The user should only ever see steps 4–5 as a brief "Reconnecting…" badge.
 
+## Far-away Macs
+
+Over a Tailscale relay to another continent the round trip is ~300 ms, and relays don't carry LAN-sized bursts.
+
+- **Resend windows scale with the round trip.** The client keeps a half-received frame for 4× RTT + 100 ms (at least 250 ms) and gives up on a gap after 4× RTT; the host keeps sent packets for 2 s. With fixed short windows every lost packet became a freeze plus a keyframe.
+- **Rate follows loss.** Once a second the host compares packets resent with packets sent. At least 4 resent and at least 2% of what was sent: bitrate and burst pacing drop to 70% (down to 15%). After 4 clean seconds they go up 15% at a time, back to full. Over a Tailscale relay a session starts at 40%. The bitrate changes on the live encoder (no keyframe).
+- **Tiles show the real round trip:** the dashboard pings the host on its preview connection (build 24+ hosts answer) rather than timing the picture download.
+
 ## Host settings that keep it awake
 
 - `ProcessInfo.beginActivity` with latency-critical and user-initiated options while a client is connected (stops App Nap).

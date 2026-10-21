@@ -202,7 +202,7 @@ final class ClientConnection {
     private func connect() {
         gen += 1
         let g = gen
-        status("Connecting to \(target.label)…", connected: false)
+        status("Connecting to \(MacNames.display(target.label))…", connected: false)
         connectStartedUs = Clock.nowUs()
         lastPongUs = connectStartedUs
         let conn = NWConnection(to: target.endpoint, using: ControlChannel.tcpParameters())
@@ -589,7 +589,8 @@ final class ClientConnection {
             scheduleReconnect("no heartbeat from the host for 2 s")
             return
         }
-        reassembler.expire(nowUs: now, maxAgeUs: 250_000)
+        // Give a resend time to arrive from far away too (same limit as giving up on a gap).
+        reassembler.expire(nowUs: now, maxAgeUs: max(250_000, UInt64(rttUs * 4) + 100_000))
         if waitingForKeyframe, now - lastKeyframeRequestUs > 300_000 { requestKeyframe("still waiting for keyframe") }
 
         // Compare counters now vs ~1 s ago to find a stalled stage.
