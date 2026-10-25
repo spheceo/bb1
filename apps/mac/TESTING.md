@@ -4,7 +4,7 @@
 
 - Streams the host's main display (the Dell, 1920×1080) at full resolution, 60 fps, HEVC in Apple's low-latency encoder mode, 30 Mbps.
 - Mouse, clicks, scrolling (with trackpad momentum) and keyboard, including Cmd shortcuts.
-- Fixes stalls by itself: if capture, encoder, decoder, video packets or the connection get stuck, it recovers without you reconnecting ([docs/04-reliability.md](docs/04-reliability.md)).
+- Fixes stalls by itself: if capture, encoder, decoder, video packets or the connection get stuck, it recovers without you reconnecting ([docs/04-reliability.md](../../docs/04-reliability.md)).
 - Encrypted, and only devices with the pairing key can connect.
 - Finds the host on your home network automatically.
 
@@ -126,6 +126,7 @@ Most useful:
 ## For development
 
 ```sh
+cd apps/mac                        # Mac commands run from here
 swift build                        # debug build, fast
 swift run bb1-selftest             # protocol/crypto checks
 scripts/recovery-test.sh           # break things on purpose, check recovery (test pattern)

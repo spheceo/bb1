@@ -22,6 +22,9 @@ jobs:
     runs-on: macos-26
     # A new Apple team can wait hours for its first notarizations.
     timeout-minutes: 360
+    defaults:
+      run:
+        working-directory: apps/mac
     env:
       BB1_RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || '' }}
       BB1_NOTARIZE: ${{ github.event_name == 'push' && '1' || inputs.notarize && '1' || '0' }}
@@ -47,7 +50,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: bb1-macos-arm64
-          path: dist/
+          path: apps/mac/dist/
           retention-days: 7
           if-no-files-found: error
       - name: Keep notarization receipts even if Apple is slow or rejects a build
@@ -55,7 +58,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: notarization-receipts
-          path: build/notary/
+          path: apps/mac/build/notary/
           retention-days: 7
           if-no-files-found: ignore
       - name: Remove runner credentials
@@ -70,6 +73,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    defaults:
+      run:
+        working-directory: apps/mac
     env:
       BB1_RELEASE_TAG: ${{ github.ref_name }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -81,6 +87,6 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: bb1-macos-arm64
-          path: dist
+          path: apps/mac/dist
       - name: Publish both files together
         run: scripts/ci-publish.sh

@@ -4,4 +4,5 @@ dist/
 .swiftpm/
 *.xcodeproj
 .DS_Store
-Resources/AppIcon-1024.png
+apps/mac/Resources/AppIcon-1024.png
+target/
