@@ -25,6 +25,66 @@ use windows::core::{HSTRING, PCWSTR, w};
 
 const WM_APP_FULLSCREEN: u32 = WM_APP + 10;
 const TIMER_CLIPBOARD: usize = 2;
+const TIMER_MOVE: usize = 3;
+/// At most one pointer move per this long (125 a second, about what a Mac sends). A 500–1000 Hz
+/// mouse would otherwise flood the Mac with moves it has to replay one by one, and input falls behind.
+const MOVE_EVERY: std::time::Duration = std::time::Duration::from_millis(8);
+
+/// Pointer moves waiting to go out (UI thread only).
+struct Moves {
+    pending: Option<(f64, f64)>,
+    last: Option<(f64, f64)>,
+    sent_at: std::time::Instant,
+}
+
+thread_local! {
+    static MOVES: RefCell<Moves> = RefCell::new(Moves { pending: None, last: None, sent_at: std::time::Instant::now() });
+}
+
+/// Sends the newest pointer position now, or soon (`flush` timer) if one just went out.
+fn queue_move(hwnd: HWND, x: f64, y: f64) {
+    let send_now = MOVES.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.last == Some((x, y)) && m.pending.is_none() {
+            return None; // didn't move
+        }
+        if m.sent_at.elapsed() >= MOVE_EVERY {
+            m.pending = None;
+            m.last = Some((x, y));
+            m.sent_at = std::time::Instant::now();
+            Some(true)
+        } else {
+            m.pending = Some((x, y));
+            Some(false)
+        }
+    });
+    match send_now {
+        Some(true) => send(Msg::MouseMove(v(MouseMoveMsg { x, y }))),
+        Some(false) => unsafe {
+            SetTimer(Some(hwnd), TIMER_MOVE, 10, None);
+        },
+        None => {}
+    }
+}
+
+/// Sends a waiting pointer move (before a click, so it lands where the pointer is).
+fn flush_move(hwnd: HWND) {
+    let pending = MOVES.with(|m| {
+        let mut m = m.borrow_mut();
+        let p = m.pending.take();
+        if p.is_some() {
+            m.last = p;
+            m.sent_at = std::time::Instant::now();
+        }
+        p
+    });
+    unsafe {
+        let _ = KillTimer(Some(hwnd), TIMER_MOVE);
+    }
+    if let Some((x, y)) = pending {
+        send(Msg::MouseMove(v(MouseMoveMsg { x, y })));
+    }
+}
 
 // System menu commands (multiples of 16: Windows uses the low 4 bits).
 const CMD_FULLSCREEN: usize = 0x10;
@@ -565,6 +625,7 @@ fn mouse_xy(lparam: LPARAM) -> (i32, i32) {
 }
 
 fn press(hwnd: HWND, button: i64, lparam: LPARAM) {
+    flush_move(hwnd);
     let (x, y) = mouse_xy(lparam);
     if !over_picture_at(hwnd, x, y) || !with(|s| s.connected).unwrap_or(false) {
         return;
@@ -592,6 +653,7 @@ fn press(hwnd: HWND, button: i64, lparam: LPARAM) {
 }
 
 fn release(hwnd: HWND, button: i64, lparam: LPARAM) {
+    flush_move(hwnd);
     let (x, y) = mouse_xy(lparam);
     let Some((held, clicks)) = with(|s| {
         let held = s.buttons_held > 0;
@@ -613,6 +675,7 @@ fn release(hwnd: HWND, button: i64, lparam: LPARAM) {
 }
 
 fn wheel(hwnd: HWND, wparam: WPARAM, lparam: LPARAM, horizontal: bool) {
+    flush_move(hwnd);
     // Wheel messages carry screen coordinates.
     let mut p = POINT { x: (lparam.0 & 0xFFFF) as i16 as i32, y: ((lparam.0 >> 16) & 0xFFFF) as i16 as i32 };
     unsafe {
@@ -638,8 +701,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let held = with(|s| s.buttons_held > 0).unwrap_or(false);
             if (held || over_picture_at(hwnd, x, y)) && with(|s| s.connected).unwrap_or(false) {
                 let (nx, ny) = normalized(hwnd, x, y);
-                send(Msg::MouseMove(v(MouseMoveMsg { x: nx, y: ny })));
+                queue_move(hwnd, nx, ny);
             }
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == TIMER_MOVE => {
+            flush_move(hwnd);
             LRESULT(0)
         }
         WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => {
