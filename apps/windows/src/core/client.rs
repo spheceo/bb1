@@ -308,6 +308,8 @@ impl Client {
 fn supervise(shared: Arc<Shared>) {
     let mut retry = 0.25;
     let mut retried_after_forgotten = false;
+    let mut ever_welcomed = false;
+    let mut failed_before_welcome = 0;
     loop {
         if shared.stopped.load(Relaxed) {
             shared.events.ended("Disconnected.");
@@ -321,6 +323,7 @@ fn supervise(shared: Arc<Shared>) {
         }
         if welcomed {
             retry = 0.25;
+            ever_welcomed = true;
         }
         match end {
             End::Ended(reason) => {
@@ -352,6 +355,16 @@ fn supervise(shared: Arc<Shared>) {
                     shared.events.ended(&format!("Pairing didn't finish ({why})."));
                     return;
                 }
+                // Never got in at all: say why instead of retrying forever (a dropped stream still reconnects).
+                if !ever_welcomed {
+                    failed_before_welcome += 1;
+                    if failed_before_welcome >= 3 {
+                        let label = shared.target.lock().unwrap().label.clone();
+                        logi!("client: couldn't connect to {label}: {why}");
+                        shared.events.ended(&format!("Couldn't connect to {label}: {why}."));
+                        return;
+                    }
+                }
                 logi!("client: reconnecting: {why}");
                 shared.events.status(&format!("Reconnecting… ({why})"), false);
                 std::thread::sleep(Duration::from_secs_f64(retry));
@@ -382,10 +395,72 @@ fn connect_tcp(address: &str) -> Result<TcpStream, String> {
     for a in sorted {
         match TcpStream::connect_timeout(&a, Duration::from_secs(5)) {
             Ok(s) => return Ok(s),
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                last = "bb1 isn't sharing on that Mac (it refused the connection)".into()
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => last = "the Mac didn't answer".into(),
             Err(e) => last = format!("can't reach the Mac ({e})"),
         }
     }
     Err(last)
+}
+
+/// A signed-in side connection (purpose "update"): previews and pings, no stream. Code pairing isn't offered.
+/// A reader thread receives, so a slow message never gets cut in half by a timeout.
+pub struct SideChannel {
+    stream: TcpStream,
+    sealer: StreamSealer,
+    incoming: Receiver<Result<Option<Msg>, String>>,
+    /// The host's bb1 build (0 = too old to say).
+    pub host_build: i64,
+}
+
+impl SideChannel {
+    pub fn open(target: &Target, timeout: Duration) -> Result<SideChannel, String> {
+        let addr = target.address.to_socket_addrs().map_err(|e| e.to_string())?.next().ok_or("no address")?;
+        let mut stream = TcpStream::connect_timeout(&addr, timeout).map_err(|e| e.to_string())?;
+        let _ = stream.set_nodelay(true);
+        let (keys, host) = handshake_with(&mut stream, target, Some("update"), &|_: &str| None).map_err(|e| match e {
+            End::Rejected(r) | End::Closed(r) | End::Ended(r) => r,
+        })?;
+        let _ = stream.set_read_timeout(None);
+        let mut reader = stream.try_clone().map_err(|e| e.to_string())?;
+        let mut opener = StreamSealer::new(&keys.host_to_client);
+        let (tx, incoming) = unbounded();
+        std::thread::Builder::new()
+            .name("bb1 side channel".into())
+            .spawn(move || loop {
+                let msg = read_frame(&mut reader)
+                    .and_then(|body| opener.open(&body).ok_or_else(|| "message failed authentication".to_string()))
+                    .map(|plain| Msg::decode(&plain));
+                let failed = msg.is_err();
+                if tx.send(msg).is_err() || failed {
+                    return;
+                }
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(SideChannel { stream, sealer: StreamSealer::new(&keys.client_to_host), incoming, host_build: host.app_build.unwrap_or(0) })
+    }
+
+    pub fn send(&mut self, msg: &Msg) -> Result<(), String> {
+        let sealed = self.sealer.seal(&msg.encode());
+        write_frame(&mut self.stream, &sealed).map_err(|e| e.to_string())
+    }
+
+    /// The next message (Ok(None): nothing within `timeout`, or a type this client doesn't know).
+    pub fn receive(&mut self, timeout: Duration) -> Result<Option<Msg>, String> {
+        match self.incoming.recv_timeout(timeout) {
+            Ok(r) => r,
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => Ok(None),
+            Err(_) => Err("connection closed".into()),
+        }
+    }
+}
+
+impl Drop for SideChannel {
+    fn drop(&mut self) {
+        let _ = self.stream.shutdown(Shutdown::Both);
+    }
 }
 
 fn write_frame(stream: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
@@ -415,9 +490,15 @@ fn describe_read_error(e: &std::io::Error) -> String {
     }
 }
 
-/// Version 4 handshake (BB1Core/ControlChannel.swift). Returns the session keys and the host's hello.
 fn handshake(shared: &Shared, stream: &mut TcpStream) -> Result<(SessionKeys, HostHello), End> {
     let target = shared.target.lock().unwrap().clone();
+    handshake_with(stream, &target, None, &|host: &str| shared.events.ask_code(host))
+}
+
+/// Version 4 handshake (BB1Core/ControlChannel.swift). Returns the session keys and the host's hello.
+/// `purpose` "update" is a side connection (screen previews) that doesn't touch the stream.
+fn handshake_with(stream: &mut TcpStream, target: &Target, purpose: Option<&str>,
+                  ask_code: &dyn Fn(&str) -> Option<String>) -> Result<(SessionKeys, HostHello), End> {
     let device_id = store::device_id();
     let mode = target.auth.mode();
     let client_nonce = crate::core::random_bytes::<32>().to_vec();
@@ -430,7 +511,7 @@ fn handshake(shared: &Shared, stream: &mut TcpStream) -> Result<(SessionKeys, Ho
         mode: Some(mode.into()),
         ecdh_pub: Some(eph.public.to_vec()),
         app_build: None,
-        purpose: None,
+        purpose: purpose.map(String::from),
         codecs: Some(vec!["h264".into()]),
     };
     write_frame(stream, &Msg::ClientHello(v(hello)).encode()).map_err(|e| End::Closed(format!("send failed ({e})")))?;
@@ -452,7 +533,7 @@ fn handshake(shared: &Shared, stream: &mut TcpStream) -> Result<(SessionKeys, Ho
     let secret: Vec<u8> = match &target.auth {
         Auth::Device(s) => s.clone(),
         Auth::Tailscale => Vec::new(),
-        Auth::Code => match shared.events.ask_code(&target.label) {
+        Auth::Code => match ask_code(&target.label) {
             Some(code) if code.chars().any(|c| c.is_ascii_digit()) => {
                 code.chars().filter(|c| c.is_ascii_digit()).collect::<String>().into_bytes()
             }

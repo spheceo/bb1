@@ -7,6 +7,7 @@ mod clipboard;
 mod connect;
 mod cursor;
 mod decoder;
+mod gfx;
 mod render;
 mod stream;
 mod util;

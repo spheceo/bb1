@@ -42,6 +42,7 @@ dependencies = [
  "sha2",
  "socket2",
  "windows",
+ "windows-numerics",
  "x25519-dalek",
 ]
 

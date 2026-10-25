@@ -216,6 +216,16 @@ pub struct ScrollMsg {
     pub momentum: u64,
 }
 
+/// Host → client: a small picture of the host's main screen, for the Macs list.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewMsg {
+    /// None when there's no picture (no Screen Recording permission yet).
+    #[serde(skip_serializing_if = "Option::is_none", default, with = "b64opt")]
+    pub jpeg: Option<Vec<u8>>,
+    pub capture_ms: f64,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateStatusMsg {
@@ -267,6 +277,13 @@ pub enum Msg {
     CapsLock(V<bool>),
 
     UpdateStatus(V<UpdateStatusMsg>),
+
+    // Screen previews, on "update" connections
+    RequestPreview {
+        #[serde(rename = "maxWidth")]
+        max_width: i64,
+    },
+    Preview(V<PreviewMsg>),
 }
 
 impl Msg {

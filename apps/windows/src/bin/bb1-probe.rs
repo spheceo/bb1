@@ -64,6 +64,29 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let arg = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
     let host = arg("--host").expect("--host address");
+    if args.iter().any(|a| a == "--preview") {
+        // The Macs list's side connection: sign in quietly, ask for a picture and a ping.
+        let target = Target::new(&host, "");
+        let mut ch = bb1::core::client::SideChannel::open(&target, Duration::from_secs(3)).unwrap_or_else(|e| { println!("FAIL {e}"); std::process::exit(1) });
+        ch.send(&bb1::core::proto::Msg::Ping(bb1::core::proto::v(bb1::core::proto::PingMsg { seq: 1, client_us: bb1::core::now_us(), received: 0, decoded: 0, displayed: 0 }))).unwrap();
+        ch.send(&bb1::core::proto::Msg::RequestPreview { max_width: 960 }).unwrap();
+        let (mut pong, mut preview) = (None, None);
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < until && (pong.is_none() || preview.is_none()) {
+            match ch.receive(Duration::from_millis(500)) {
+                Ok(Some(bb1::core::proto::Msg::Pong(p))) => pong = Some((bb1::core::now_us() - p.v.client_us) as f64 / 1000.0),
+                Ok(Some(bb1::core::proto::Msg::Preview(p))) => preview = Some(p.v),
+                Ok(_) => {}
+                Err(e) => { println!("FAIL {e}"); std::process::exit(1) }
+            }
+        }
+        match (pong, preview) {
+            (Some(ms), Some(p)) => println!("OK preview: host build {}, ping {ms:.1} ms, picture {}", ch.host_build,
+                p.jpeg.map(|j| format!("{} KB JPEG", j.len() / 1000)).unwrap_or("none (no Screen Recording permission)".into())),
+            other => { println!("FAIL pong {:?} preview {}", other.0, other.1.is_some()); std::process::exit(1) }
+        }
+        return;
+    }
     let seconds: u64 = arg("--seconds").and_then(|s| s.parse().ok()).unwrap_or(6);
     let mut target = Target::new(&host, "");
     if args.iter().any(|a| a == "--pair") || arg("--code").is_some() || arg("--code-file").is_some() {

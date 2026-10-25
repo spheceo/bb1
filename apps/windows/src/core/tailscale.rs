@@ -12,6 +12,10 @@ pub struct Peer {
     /// Some when Tailscale has a direct path.
     pub direct: Option<String>,
     pub relay: Option<String>,
+    /// The Tailscale account it belongs to.
+    pub login: String,
+    /// Same account as this PC.
+    pub mine: bool,
 }
 
 fn cli() -> Option<String> {
@@ -61,6 +65,12 @@ pub fn peers() -> Option<Vec<Peer>> {
     let data = run(&["status", "--json"])?;
     let root: serde_json::Value = serde_json::from_slice(&data).ok()?;
     let peers = root.get("Peer")?.as_object()?;
+    let users = root.get("User").and_then(|u| u.as_object());
+    let login_of = |node: &serde_json::Value| -> String {
+        let id = node.get("UserID").map(|v| v.to_string()).unwrap_or_default();
+        users.and_then(|u| u.get(&id)).and_then(|u| u.get("LoginName")).and_then(|v| v.as_str()).unwrap_or("").to_string()
+    };
+    let me = root.get("Self").map(login_of).unwrap_or_default();
     let mut out: Vec<Peer> = peers
         .values()
         .filter_map(|p| {
@@ -75,11 +85,19 @@ pub fn peers() -> Option<Vec<Peer>> {
                 os: s("OS"),
                 direct: (!cur.is_empty()).then_some(cur),
                 relay: (!relay.is_empty()).then_some(relay),
+                login: login_of(p),
+                mine: !me.is_empty() && login_of(p) == me,
             })
         })
         .collect();
     out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     Some(out)
+}
+
+/// Is bb1 sharing on this Mac? (Its control port answers.) Blocks up to `timeout`.
+pub fn bb1_answers(ip: &str, timeout: std::time::Duration) -> bool {
+    let addr = if ip.contains(':') { format!("[{ip}]:{}", crate::core::CONTROL_PORT) } else { format!("{ip}:{}", crate::core::CONTROL_PORT) };
+    addr.parse().ok().is_some_and(|a| std::net::TcpStream::connect_timeout(&a, timeout).is_ok())
 }
 
 /// 100.64.0.0/10 or fd7a:115c:a1e0::/48

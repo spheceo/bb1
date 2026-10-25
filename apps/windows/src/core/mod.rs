@@ -1,6 +1,7 @@
 pub mod audio;
 pub mod client;
 pub mod crypto;
+pub mod directory;
 pub mod discovery;
 pub mod keymap;
 pub mod log;

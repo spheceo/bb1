@@ -119,6 +119,7 @@ pub fn open(label: &str) -> Sender<VideoCmd> {
             None,
         )
         .expect("couldn't create the stream window");
+        crate::win::gfx::dark_title_bar(hwnd);
         add_menu(hwnd);
         let video = render::spawn(hwnd);
         let settings = app::settings();
