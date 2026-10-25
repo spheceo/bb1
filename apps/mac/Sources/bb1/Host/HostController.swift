@@ -610,14 +610,29 @@ final class HostController {
         }
         warnIfLowOnDisk(s)
         startGentlyIfRelayed(s)
+        let codec = codec(for: channel)
+        pipeline.setCodec(codec)
         activity = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiated, .latencyCritical, .idleSystemSleepDisabled, .idleDisplaySleepDisabled],
             reason: "bb1 is streaming to \(s.name)")
         pipeline.start()
         // If the pipeline was already running (client replaced), resend its config right away.
-        if let info = pipeline.info { sendStreamConfig(info) }
+        if let info = pipeline.info, info.codec == codec { sendStreamConfig(info) }
         pipeline.requestKeyframe("new session")
         notifyChange()
+    }
+
+    /// The preferred codec, unless the client says it can't decode it (the Windows client only does H.264).
+    private func codec(for channel: ControlChannel) -> VideoCodec {
+        let preferred = options.pipeline.codec
+        guard let codecs = channel.peerCodecs else { return preferred }
+        if codecs.contains(preferred.id) { return preferred }
+        let other: VideoCodec = preferred == .hevc ? .h264 : .hevc
+        if codecs.contains(other.id) {
+            Log.info("host: \(channel.peerName) can't decode \(preferred.name); streaming \(other.name)")
+            return other
+        }
+        return preferred
     }
 
     // MARK: Updates

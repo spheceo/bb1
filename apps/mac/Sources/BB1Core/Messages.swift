@@ -5,6 +5,8 @@ public enum VideoCodec: UInt8, Codable {
     case hevc = 2
 
     public var name: String { self == .hevc ? "HEVC" : "H.264" }
+    /// The name used in `ClientHello.codecs`.
+    public var id: String { self == .hevc ? "hevc" : "h264" }
 }
 
 public struct ClientHello: Codable {
@@ -21,6 +23,9 @@ public struct ClientHello: Codable {
     public var appBuild: Int?
     /// "update": not a streaming session, only for checking the host's build and updating it.
     public var purpose: String?
+    /// Codecs the client can decode ("hevc", "h264"). nil = both (every Mac client).
+    /// The Windows client sends ["h264"]: Windows has no built-in HEVC decoder.
+    public var codecs: [String]?
 }
 
 public struct HostHello: Codable {

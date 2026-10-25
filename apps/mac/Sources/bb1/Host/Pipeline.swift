@@ -120,6 +120,18 @@ final class StreamPipeline {
         }
     }
 
+    /// Switch codec (a client that can only decode H.264). A running stream restarts with a new encoder.
+    func setCodec(_ codec: VideoCodec) {
+        queue.async {
+            guard self.settings.codec != codec else { return }
+            Log.info("pipeline: switching to \(codec.name)")
+            self.settings.codec = codec
+            let wasRunning = self.running
+            self.stopInternal(dropEncoder: true)
+            if wasRunning { self.startInternal() }
+        }
+    }
+
     func setShowsCursor(_ show: Bool) {
         queue.async {
             self.settings.showsCursor = show

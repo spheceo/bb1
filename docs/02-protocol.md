@@ -2,6 +2,8 @@
 
 Written so a Windows or browser client can be built from this page alone. All integers are little-endian.
 
+**What's actually on the wire** is what `apps/mac/Sources/BB1Core` does: control messages are Swift `Codable` JSON (`{"key":{"_0":{…}}}`), length-prefixed and sealed with ChaCha20-Poly1305. `protocol/vectors.json` (written by `swift run bb1-selftest --vectors`) has every message and crypto step with fixed inputs; the Windows client's tests check against it. Regenerate it whenever a message changes.
+
 ## Channels
 
 | Channel | Carries | Delivery |
@@ -35,7 +37,7 @@ The client assembles a frame once all `packet_count` packets arrive. If a frame 
 
 | Message | Direction | Purpose |
 |---|---|---|
-| `HELLO` / `HELLO_ACK` | both | Version, device key, client screen size, codecs supported |
+| `HELLO` / `HELLO_ACK` | both | Version, device key, client screen size, codecs supported (`codecs`: the client lists what it decodes, e.g. `["h264"]` from Windows; Mac clients leave it out and get HEVC) |
 | `STREAM_CONFIG` | host → client | Codec, resolution, fps, parameter sets (VPS/SPS/PPS) |
 | `KEY` | client → host | Key code, down/up, modifier state |
 | `MOUSE_BUTTON` | client → host | Button, down/up, position |
@@ -59,6 +61,6 @@ Positions are relative (0..1) so the client window can be any size.
 ## Keyboard codes
 
 - **Mac → Mac:** send macOS virtual key codes as-is. Nothing to translate.
-- **Windows → Mac:** client sends USB HID usage codes; host maps them to Mac key codes. The Windows key maps to Cmd by default, and this can be changed.
+- **Windows → Mac:** the client maps PC scan codes (keyboard positions) to Mac key codes itself (`apps/windows/src/core/keymap.rs`), so the host needs no changes. The Windows key is Cmd by default; the stream window's menu can make Alt Cmd (Mac key positions) or Ctrl Cmd (Ctrl+C copies).
 - Modifier state is sent with every key, so a lost or stuck modifier fixes itself on the next keystroke.
 - When the client loses focus or disconnects, the host releases every key and button it thinks is held. This prevents a stuck Cmd or Shift on the Mac.

@@ -1,12 +1,12 @@
 # bb1
 
-A personal, low-latency remote desktop for macOS. One Mac at home is the **host**; you connect to it from a **client** (Mac first, Windows later, browser maybe).
+A personal, low-latency remote desktop for macOS. One Mac at home is the **host**; you connect to it from a **client**: a Mac, or a Windows PC (new, in testing). Browser maybe.
 
 The bar is Parsec: crisp image, input that feels local. The thing Parsec got wrong for us on a Mac host — the stream freezing every ~5 minutes until you reconnect — is the thing bb1 has to get right.
 
 ## Status
 
-**Version 0.0.0 (first release), in daily testing.** Nightlies (bb1 nightly-1, nightly-2, …) arrive as in-app updates. One app, **BB1.app**, runs as host or client. The host streams its screen with mouse/keyboard control; lost packets are resent, the clipboard is shared both ways, both sides recover from stalls by themselves, and all logs end up on the host. To try it, follow **[TESTING.md](TESTING.md)**.
+**Version 0.0.0 (first release), in daily testing.** Nightlies (bb1 nightly-1, nightly-2, …) arrive as in-app updates. One app, **BB1.app**, runs as host or client. The host streams its screen with mouse/keyboard control; lost packets are resent, the clipboard is shared both ways, both sides recover from stalls by themselves, and all logs end up on the host. To try it, follow **[TESTING.md](apps/mac/TESTING.md)**. The Windows client: **[apps/windows](apps/windows/README.md)**.
 
 Built so far: roadmap M1 (video), M2 (input), most of M3 (watchdogs, recovery, fault injection) and part of M5 (pairing key, encryption). Not yet tested on the real M1 → M4 Wi-Fi path.
 
@@ -29,17 +29,22 @@ Built so far: roadmap M1 (video), M2 (input), most of M3 (watchdogs, recovery, f
 
 ## Shape of the code
 
-One Swift package, built with the Command Line Tools (no Xcode). Details in [07](docs/07-building-and-running.md).
+A monorepo: one folder per app under `apps/`. The Mac app is one Swift package built with the Command Line Tools (no Xcode); the Windows client is Rust. Details in [07](docs/07-building-and-running.md).
 
 ```
 bb1/
-  Package.swift
-  Sources/
-    BB1Core/      protocol, crypto, transport, clipboard sync (shared)
-    bb1/          the app: App/ (menu bar, modes, settings), Host/ (capture, encode, input), Client/ (decode, display, input)
-    bb1-selftest/ protocol and crypto checks (swift run bb1-selftest)
-  scripts/        signed .app, .dmg and update zip; dev install; recovery and sign-in tests
+  apps/
+    mac/            the Mac app (host and client), signed and notarized
+      Package.swift
+      Sources/
+        BB1Core/      protocol, crypto, transport, clipboard sync (shared)
+        bb1/          the app: App/ (menu bar, modes, settings), Host/ (capture, encode, input), Client/ (decode, display, input)
+        bb1-selftest/ protocol and crypto checks (swift run bb1-selftest); also writes protocol/vectors.json
+      scripts/        signed .app, .dmg and update zip; dev install; recovery and sign-in tests
+    windows/        the Windows client (Rust, unsigned): see apps/windows/README.md
+  protocol/
+    vectors.json    test vectors from the Mac app that the Windows client is checked against
   docs/
 ```
 
-A Windows client comes later and is built against [02-protocol](docs/02-protocol.md).
+Mac commands run from `apps/mac` (`cd apps/mac && scripts/release.sh --publish`).

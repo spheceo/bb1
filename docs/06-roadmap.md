@@ -44,7 +44,7 @@ Pairing with a code, saved device keys, Tailscale path, direct/relayed indicator
 
 ## M6 — Windows client
 
-Built from the protocol spec. Language picked then (see [open questions](open-questions.md)).
+In testing (2026-10-25): `apps/windows`, Rust, unsigned. Hardware H.264 decode (Media Foundation) and Direct3D 11 display, keyboard hook for Windows-key shortcuts, sound (WASAPI), clipboard, Tailscale and home-network discovery, pairing with the 6-digit code. The host sends H.264 to it (Windows has no free HEVC decoder). Not yet: self-update, signing (SmartScreen asks "Run anyway" once).
 
 ## Ideas
 

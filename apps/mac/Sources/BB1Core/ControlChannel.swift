@@ -80,6 +80,8 @@ public final class ControlChannel {
     public private(set) var authMode = "key"
     /// The other side's app build, if it announced one (0 = an older bb1 that can't update remotely).
     public private(set) var peerBuild = 0
+    /// Host: the codecs the client can decode (nil = any; every Mac client).
+    public private(set) var peerCodecs: [String]?
     /// Client: set before `start()`. Host: what the client said it connected for ("update", or nil to stream).
     public var purpose: String?
     /// Client side: waiting for the user to type a pairing code (don't time out).
@@ -236,6 +238,7 @@ public final class ControlChannel {
             peerName = hello.name
             peerVersion = hello.version
             peerBuild = hello.appBuild ?? 0
+            peerCodecs = hello.codecs
             purpose = hello.purpose
             guard hello.version >= 4, let clientPub = hello.ecdhPub else {
                 // Version 1–3 client: the old pairing-key handshake.

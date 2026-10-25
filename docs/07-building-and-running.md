@@ -4,7 +4,7 @@
 
 Everything builds with the Command Line Tools that are already installed (Swift 6.2, macOS SDK). Checked on 2026-10-20: ScreenCaptureKit, VideoToolbox, CoreGraphics, Network and AppKit all compile with plain `swiftc`.
 
-- **Build:** Swift Package Manager (`swift build`). One `Package.swift` at the repo root.
+- **Build:** Swift Package Manager (`swift build`), from `apps/mac` (one `Package.swift` there). The repo is a monorepo; the Windows client is in `apps/windows` (Rust, see its README).
 - **Editor:** anything. VS Code / Cursor with the Swift extension works well.
 - **Debugger:** `lldb`, included with the Command Line Tools.
 - **Signing:** published builds use **Developer ID Application: SIPHESIHLE GODSGIFT MBUYISA (5PLDN9BDV4)** (paid Apple Developer Program), with the hardened runtime and a secure timestamp. Published builds and their disk image are notarized by Apple and stapled, so a new Mac opens them without a warning. Without the Developer ID installed, `bundle.sh` falls back to **bb1 Local Signing**, a self-signed certificate that `scripts/signing-identity.sh` creates once.
@@ -21,20 +21,26 @@ What we give up without Xcode: Interface Builder, SwiftUI previews and Instrumen
 
 ```
 bb1/
+  apps/mac/         everything below is relative to this folder; run Mac commands from here
   Package.swift
   Sources/
     BB1Core/        protocol types, packetizer, transport (shared)
     bb1/            the app (App/, Host/, Client/); `bb1 host` / `bb1 client` from a terminal
+    bb1-selftest/   protocol/crypto checks; `--vectors` writes ../../protocol/vectors.json
   Resources/
-    Host-Info.plist
-    Client-Info.plist
+    Info.plist
+    AppIcon.icns
   scripts/
     bundle.sh       wraps a built binary into a signed .app
     release.sh      .app → .dmg (install by hand) + .zip (in-app updates); --publish / --release put them on GitHub
     make-dmg.sh     the drag-to-Applications disk image (dmgbuild + make-dmg-background.swift)
     install.sh      development: build, install into /Applications, open
-  docs/
+apps/windows/       the Windows client (Rust); builds on a Mac too (see its README)
+protocol/           test vectors shared by both clients
+docs/
 ```
+
+Moving the Mac app into `apps/mac` didn't change its signature: the designated requirement is still `identifier "com.bb1.host"` + team `5PLDN9BDV4`, so permissions and updates carry on. GitHub Actions runs the Mac release from `apps/mac` and the Windows build (`.github/workflows/windows.yml`) only when `apps/windows` or `protocol` change.
 
 ## What the host is
 
