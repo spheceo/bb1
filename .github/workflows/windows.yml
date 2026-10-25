@@ -1,0 +1,31 @@
+name: Windows client
+
+on:
+  push:
+    branches: [main]
+    paths: ['apps/windows/**', 'protocol/**', '.github/workflows/windows.yml']
+  pull_request:
+    paths: ['apps/windows/**', 'protocol/**', '.github/workflows/windows.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: apps/windows
+    steps:
+      - uses: actions/checkout@v7
+      - name: Protocol, crypto and key-map checks (against protocol/vectors.json from the Mac app)
+        run: cargo test --locked
+      - name: Build bb1.exe (unsigned)
+        run: cargo build --release --locked --bin bb1
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bb1-windows-x64
+          path: apps/windows/target/release/bb1.exe
+          retention-days: 14
+          if-no-files-found: error

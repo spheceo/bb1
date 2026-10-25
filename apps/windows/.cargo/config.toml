@@ -1,0 +1,8 @@
+# Cross-compiling from a Mac: rustup target add x86_64-pc-windows-gnu && brew install mingw-w64
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# Windows builds (CI): link the C runtime statically so bb1.exe runs on a PC without the VC++ redistributable.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
