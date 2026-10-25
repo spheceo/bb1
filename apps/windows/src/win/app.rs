@@ -171,10 +171,12 @@ pub fn run() {
         }
     }
     if let Some(c) = client() {
-        c.stop();
-        std::thread::sleep(std::time::Duration::from_millis(250));
+        c.stop(); // says bye, so the Mac lets go of the keys and ends the session at once
+        std::thread::sleep(std::time::Duration::from_millis(200));
     }
     logi!("bb1 for Windows quit");
+    // Don't wait for background work (Tailscale check, previews, network listeners) to wind down.
+    std::process::exit(0);
 }
 
 /// Opens a stream window and connects to `address` ("100.80.66.124", "kenobi.local:47800").

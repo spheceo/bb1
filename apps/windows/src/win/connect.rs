@@ -464,6 +464,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(0)
         }
         WM_CLOSE => unsafe {
+            // Gone from the screen at once; the rest of quitting happens out of sight.
+            let _ = ShowWindow(hwnd, SW_HIDE);
+            if let Some(stream) = crate::win::stream::hwnd() {
+                let _ = ShowWindow(stream, SW_HIDE);
+            }
             PostQuitMessage(0);
             LRESULT(0)
         },
