@@ -131,6 +131,7 @@ swift build                        # debug build, fast
 swift run bb1-selftest             # protocol/crypto checks
 scripts/recovery-test.sh           # break things on purpose, check recovery (test pattern)
 scripts/recovery-test.sh --screen  # same, with real screen capture
+scripts/multi-client-test.sh       # two computers at once; one computer connecting twice
 swift run bb1 host --help          # host options
 swift run bb1 client --help        # client options
 ```

@@ -84,7 +84,13 @@ final class StreamPipeline {
 
     // MARK: Control (any thread)
 
-    func start() { queue.async { self.startInternal() } }
+    func start() {
+        queue.async {
+            self.startInternal()
+            // An encoder made in advance (or kept from the last session) doesn't announce itself again.
+            if let info = self.info { self.onStreamInfo?(info) }
+        }
+    }
 
     func stop() { queue.async { self.stopInternal(dropEncoder: false) } }
 
@@ -319,7 +325,9 @@ final class StreamPipeline {
             let info = StreamInfo(width: width, height: height, codec: e.codec, fps: settings.fps,
                                   bitrateMbps: bitrate, lowLatency: e.lowLatency, epoch: epoch)
             self.info = info
-            onStreamInfo?(info)
+            // Only while streaming: one made in advance may be replaced (another codec) before start(),
+            // and announcing it told a Windows client it was getting HEVC.
+            if running { onStreamInfo?(info) }
         } catch {
             Log.info("pipeline: \(error.localizedDescription)")
             counters.with { $0.lastError = error.localizedDescription }

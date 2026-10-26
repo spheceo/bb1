@@ -78,6 +78,10 @@ final class HostSession {
     var config: StreamConfig?
     /// Told the client this Mac is low on disk space.
     var warnedLowDisk = false
+    /// The client wants the pointer drawn into the picture (it doesn't draw its own).
+    var cursorInVideo = true
+    /// Counters at the last stats line (host queue).
+    var statsBaseline = (sent: UInt64(0), bytes: UInt64(0), nacks: UInt64(0), resent: UInt64(0))
 
     private let sendQueue = DispatchQueue(label: "bb1.send", qos: .userInteractive)
     private let udp = Locked<NWConnection?>(nil)
@@ -140,6 +144,12 @@ final class HostSession {
     }
 
     var hasVideoPath: Bool { udp.get != nil }
+    func owns(_ connection: NWConnection) -> Bool { udp.get === connection }
+
+    /// The same computer as `channel` (it reconnected before this connection timed out).
+    func isSameDevice(as channel: ControlChannel) -> Bool {
+        channel.peerId.isEmpty ? control.peerId.isEmpty && name == channel.peerName : control.peerId == channel.peerId
+    }
 
     /// Returns true if this is a new UDP path.
     func attach(udp connection: NWConnection) -> Bool {
@@ -235,7 +245,12 @@ final class HostController {
     private var handshaking: [ControlChannel] = []
     /// Connections that only check this Mac's build or ask it to update (they don't stream).
     private var updateChannels: [ControlChannel] = []
-    private(set) var session: HostSession?
+    /// Connected clients (host queue). They all see the same screen and can all use it.
+    private(set) var sessions: [HostSession] = []
+    /// The same list for the encoder and audio threads.
+    private let live = Locked<[HostSession]>([])
+    static let maxClients = 4
+    private var clipboardRunning = false
     private var nextSessionId = UInt32.random(in: 1...UInt32.max / 2)
     private var lastPointerUs: UInt64 = 0
     /// Times of recent clicks and key presses (for the capture check).
@@ -252,8 +267,7 @@ final class HostController {
     private let audio = AudioChunker()
     private let cursorWatcher = CursorWatcher()
     private var input = (moves: 0, clicks: 0, keys: 0, scrolls: 0)
-    private var statsBaseline = (sent: UInt64(0), bytes: UInt64(0), captured: UInt64(0), encoded: UInt64(0),
-                                 keyframes: UInt64(0), nacks: UInt64(0), resent: UInt64(0))
+    private var statsBaseline = (captured: UInt64(0), encoded: UInt64(0), keyframes: UInt64(0))
     private var lastWatchdogUs: UInt64 = 0
     private var watchdogTicks = 0
     private var memoryPressure: DispatchSourceMemoryPressure?
@@ -282,7 +296,8 @@ final class HostController {
     func status() -> Status {
         queue.sync {
             let c = pipeline.counters.get
-            return Status(clientName: session?.name, stream: pipeline.info, listening: tcpListener != nil,
+            let names = sessions.isEmpty ? nil : ListFormatter.localizedString(byJoining: sessions.map(\.name))
+            return Status(clientName: names, stream: pipeline.info, listening: tcpListener != nil,
                           listenerError: listenerError, lastError: c.lastError, recoveries: c.recoveries)
         }
     }
@@ -298,19 +313,20 @@ final class HostController {
         if !HostController.hasAccessibility { Log.info("host: Accessibility permission missing (needed for mouse/keyboard), asking") }
         Permissions.askForMissing(screen: !options.pipeline.synthetic, accessibility: true)
 
-        pipeline.onEncodedFrame = { [weak self] frame in self?.session?.send(frame) }
-        audio.onChunk = { [weak self] pcm, captureUs in self?.session?.sendAudio(pcm, captureUs: captureUs) }
+        // One encoder for everyone; each client gets its own copy (own frame numbers, resends and pacing).
+        pipeline.onEncodedFrame = { [weak self] frame in self?.live.get.forEach { $0.send(frame) } }
+        audio.onChunk = { [weak self] pcm, captureUs in self?.live.get.forEach { $0.sendAudio(pcm, captureUs: captureUs) } }
         pipeline.onAudio = { [weak self] sample in
-            guard let self, self.session?.audioEnabled.get == true else { return }
+            guard let self, self.live.get.contains(where: { $0.audioEnabled.get }) else { return }
             self.audio.add(sample)
         }
         pipeline.onCaptureStopped = { [weak self] _ in
             guard let self else { return }
-            self.queue.async { if let s = self.session { self.warnIfLowOnDisk(s) } }
+            self.queue.async { self.sessions.forEach { self.warnIfLowOnDisk($0) } }
         }
         pipeline.onStreamInfo = { [weak self] info in
             guard let self else { return }
-            self.queue.async { self.sendStreamConfig(info) }
+            self.queue.async { self.sessions.forEach { self.sendStreamConfig(info, to: $0) } }
         }
 
         queue.async {
@@ -367,7 +383,7 @@ final class HostController {
     /// Stop sharing this Mac: drop the client, stop listening, stop all timers.
     func stop() {
         queue.sync {
-            self.endSession("sharing turned off on this Mac")
+            self.sessions.forEach { self.endSession($0, "sharing turned off on this Mac") }
             self.tcpListener?.cancel(); self.tcpListener = nil
             self.udpListener?.cancel(); self.udpListener = nil
             self.pendingUDP.forEach { $0.cancel() }
@@ -467,7 +483,7 @@ final class HostController {
             self.updateChannels.removeAll { $0 === channel }
             if case .rejected(let why) = reason { Log.info("host: rejected \(channel.peerName) (\(conn.endpoint)): \(why)") }
             if self.pairing?.channel === channel { self.finishPairing(false) }
-            if self.session?.control === channel { self.endSession("client disconnected") }
+            if let s = self.sessions.first(where: { $0.control === channel }) { self.endSession(s, "client disconnected") }
             channelRef = nil
         }
         channel.start()
@@ -580,32 +596,40 @@ final class HostController {
     }
 
     private func startSession(_ channel: ControlChannel, keys: SessionKeys) {
-        // Without the bye, the replaced client reconnects at once and replaces this one: two clients
-        // took turns several times a second.
-        if session != nil {
-            endSession("replaced by a new connection from \(channel.peerName)", bye: "\(channel.peerName) connected to this Mac")
+        // The same computer reconnecting (its old connection hasn't timed out yet): drop the stale one. The bye
+        // stops a second copy that's still running from reconnecting and replacing this one in turn.
+        // Other computers stay connected and see the same screen.
+        for old in sessions where old.isSameDevice(as: channel) {
+            endSession(old, "\(channel.peerName) reconnected", bye: "\(channel.peerName) connected again")
         }
+        if sessions.count >= HostController.maxClients {
+            Log.info("host: turned away \(channel.peerName): \(sessions.count) computers already connected")
+            channel.send(.bye("\(hostName) already has \(sessions.count) computers connected"))
+            queue.asyncAfter(deadline: .now() + 0.2) { channel.close(.closed("too many clients")) }
+            return
+        }
+        let first = sessions.isEmpty
         nextSessionId &+= 1
         let s = HostSession(id: nextSessionId, control: channel, keys: keys, name: channel.peerName, paceMbps: options.paceMbps)
         s.dropPercent = options.dropPercent
-        session = s
-        Log.info("host: \(s.name) connected (session \(s.id)) from \(channel.connection.endpoint)")
+        sessions.append(s)
+        live.with { $0 = sessions }
+        Log.info("host: \(s.name) connected (session \(s.id)) from \(channel.connection.endpoint)"
+                 + (first ? "" : "; also connected: \(sessions.dropLast().map(\.name).joined(separator: ", "))"))
         channel.onMessage = { [weak self, weak s] message in
-            guard let self, let s, self.session === s else { return }
+            guard let self, let s, self.sessions.contains(where: { $0 === s }) else { return }
             self.handle(message, from: s)
         }
         channel.send(.welcome(hostName: hostName))
         Log.info("host: \(channel.peerName) signed in via \(channel.authMode)")
         rememberDevice(channel)
         Log.info("host: client speaks protocol v\(channel.peerVersion)\(s.supportsV2 ? " (retransmit, clipboard, shared logs)" : " (old client: no retransmit or clipboard)")")
-        statsBaseline = (0, 0, pipeline.counters.get.captured, pipeline.counters.get.encoded, pipeline.counters.get.keyframes, 0, 0)
-        if s.supportsV2 && ProcessInfo.processInfo.environment["BB1_NO_CLIPBOARD"] == nil {
-            clipboard.onLocalCopy = { [weak self, weak s] message in
-                guard let self, let s else { return }
-                self.queue.async { if self.session === s { s.control.send(.clipboard(message)) } }
-            }
-            clipboard.start()
+        if first {
+            let c = pipeline.counters.get
+            statsBaseline = (c.captured, c.encoded, c.keyframes)
         }
+        updateClipboard()
+        updateCursor()
         if !HostController.hasAccessibility {
             channel.send(.notice("The host can't control the mouse or keyboard yet: allow bb1 in System Settings → Privacy & Security → Accessibility on the host."))
         }
@@ -614,29 +638,66 @@ final class HostController {
         }
         warnIfLowOnDisk(s)
         startGentlyIfRelayed(s)
-        let codec = codec(for: channel)
-        pipeline.setCodec(codec)
-        activity = ProcessInfo.processInfo.beginActivity(
-            options: [.userInitiated, .latencyCritical, .idleSystemSleepDisabled, .idleDisplaySleepDisabled],
-            reason: "bb1 is streaming to \(s.name)")
-        pipeline.start()
-        // If the pipeline was already running (client replaced), resend its config right away.
-        if let info = pipeline.info, info.codec == codec { sendStreamConfig(info) }
+        // Everyone shares one encoder, so it has to be a codec every client decodes. The others get the
+        // new stream config (and a keyframe) if it changes.
+        pipeline.setCodec(streamCodec())
+        if first {
+            activity = ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiated, .latencyCritical, .idleSystemSleepDisabled, .idleDisplaySleepDisabled],
+                reason: "bb1 is streaming to \(s.name)")
+        }
+        pipeline.start() // sends the stream config at once if the encoder is already there
         pipeline.requestKeyframe("new session")
         notifyChange()
     }
 
-    /// The preferred codec, unless the client says it can't decode it (the Windows client only does H.264).
-    private func codec(for channel: ControlChannel) -> VideoCodec {
+    /// The preferred codec, unless a connected client says it can't decode it (the Windows client only does H.264).
+    private func streamCodec() -> VideoCodec {
         let preferred = options.pipeline.codec
-        guard let codecs = channel.peerCodecs else { return preferred }
-        if codecs.contains(preferred.id) { return preferred }
         let other: VideoCodec = preferred == .hevc ? .h264 : .hevc
-        if codecs.contains(other.id) {
-            Log.info("host: \(channel.peerName) can't decode \(preferred.name); streaming \(other.name)")
+        let declared = sessions.filter { $0.control.peerCodecs != nil }
+        let cant = declared.filter { !$0.control.peerCodecs!.contains(preferred.id) }
+        guard !cant.isEmpty else { return preferred }
+        if declared.allSatisfy({ $0.control.peerCodecs!.contains(other.id) }) {
+            Log.info("host: \(cant.map(\.name).joined(separator: ", ")) can't decode \(preferred.name); streaming \(other.name)")
             return other
         }
         return preferred
+    }
+
+    /// Clipboard sharing runs while any connected client supports it; a copy here goes to all of them.
+    private func updateClipboard() {
+        let wanted = ProcessInfo.processInfo.environment["BB1_NO_CLIPBOARD"] == nil && sessions.contains(where: \.supportsV2)
+        guard wanted != clipboardRunning else { return }
+        clipboardRunning = wanted
+        if wanted {
+            clipboard.onLocalCopy = { [weak self] message in
+                guard let self else { return }
+                self.queue.async { self.sessions.filter(\.supportsV2).forEach { $0.control.send(.clipboard(message)) } }
+            }
+            clipboard.start()
+        } else {
+            clipboard.stop()
+            clipboard.onLocalCopy = nil
+        }
+    }
+
+    /// The pointer is drawn into the picture if any client wants that; clients that draw their own
+    /// are sent its shape.
+    private func updateCursor() {
+        pipeline.setShowsCursor(sessions.isEmpty || sessions.contains(where: \.cursorInVideo))
+        guard sessions.contains(where: { !$0.cursorInVideo && $0.supportsV2 }) else {
+            cursorWatcher.stop()
+            cursorWatcher.onChange = nil
+            return
+        }
+        cursorWatcher.onChange = { [weak self] cursor in
+            guard let self else { return }
+            self.queue.async {
+                for s in self.sessions where !s.cursorInVideo && s.supportsV2 { s.control.send(.cursor(cursor)) }
+            }
+        }
+        cursorWatcher.start() // also sends the current shape, for a client that just asked
     }
 
     // MARK: Updates
@@ -692,7 +753,7 @@ final class HostController {
 
     private func updateRequested(_ build: Int, by channel: ControlChannel) {
         Log.info("host: \(channel.peerName) asked this Mac to update from build \(BB1.build) to \(build)")
-        if let s = session, s.control !== channel {
+        for s in sessions where s.control !== channel {
             s.control.send(.notice("bb1 on this Mac is updating to \(BB1.buildName(build)). It will be back in a moment."))
         }
         let reply: (UpdateStatusMsg) -> Void = { [weak self, weak channel] status in
@@ -702,37 +763,40 @@ final class HostController {
     }
 
     /// With `bye`, the client is told why before the connection closes, so it stops instead of reconnecting.
-    private func endSession(_ reason: String, bye: String? = nil) {
-        guard let s = session else { return }
+    private func endSession(_ s: HostSession, _ reason: String, bye: String? = nil) {
+        guard sessions.contains(where: { $0 === s }) else { return }
         Log.info("host: session \(s.id) with \(s.name) ended: \(reason)")
-        session = nil
-        cursorWatcher.stop()
-        cursorWatcher.onChange = nil
-        pipeline.setShowsCursor(true)
-        clipboard.stop()
-        clipboard.onLocalCopy = nil
+        sessions.removeAll { $0 === s }
+        live.with { $0 = sessions }
         if let bye {
             s.control.send(.bye(bye))
             queue.asyncAfter(deadline: .now() + 0.2) { s.close() }
         } else {
             s.close()
         }
+        // Keys or buttons it was holding down (all of them: the injector doesn't know whose they are).
         injector.releaseAll()
-        pipeline.stop()
-        if let activity { ProcessInfo.processInfo.endActivity(activity) }
-        activity = nil
+        updateClipboard()
+        updateCursor()
+        if sessions.isEmpty {
+            pipeline.stop()
+            audio.reset()
+            if let activity { ProcessInfo.processInfo.endActivity(activity) }
+            activity = nil
+        } else {
+            // The bitrate followed the slowest client; it may have been this one.
+            pipeline.setBitrateScale(sessions.map(\.rate).min() ?? 1)
+        }
         notifyChange()
     }
 
     func disconnectClient() {
         queue.async {
-            self.session?.control.send(.bye("disconnected from the host menu"))
-            self.queue.asyncAfter(deadline: .now() + 0.2) { self.endSession("disconnected from the host menu") }
+            for s in self.sessions { self.endSession(s, "disconnected from the host menu", bye: "disconnected from the host menu") }
         }
     }
 
-    private func sendStreamConfig(_ info: StreamInfo) {
-        guard let s = session else { return }
+    private func sendStreamConfig(_ info: StreamInfo, to s: HostSession) {
         let config = StreamConfig(width: info.width, height: info.height, codec: info.codec, fps: info.fps,
                                   bitrateMbps: info.bitrateMbps, lowLatencyEncoder: info.lowLatency,
                                   udpPort: options.videoPort, sessionId: s.id, epoch: info.epoch)
@@ -771,19 +835,10 @@ final class HostController {
         case .updateHost(let build):
             updateRequested(build, by: s.control)
         case .setCursorInVideo(let inVideo):
-            pipeline.setShowsCursor(inVideo)
-            // The client draws its own cursor: keep it the same shape as this Mac's.
-            if inVideo || !s.supportsV2 {
-                cursorWatcher.stop()
-            } else {
-                cursorWatcher.onChange = { [weak self, weak s] cursor in
-                    guard let self, let s else { return }
-                    self.queue.async { if self.session === s { s.control.send(.cursor(cursor)) } }
-                }
-                cursorWatcher.start()
-            }
+            s.cursorInVideo = inVideo
+            updateCursor()
         case .bye(let reason):
-            endSession("client said bye: \(reason)")
+            endSession(s, "client said bye: \(reason)")
         case .nack(let n):
             s.resend(n)
         case .clientLog(let line):
@@ -792,8 +847,8 @@ final class HostController {
             clipboard.apply(c)
         case .setAudio(let on):
             Log.info("host: sound \(on ? "on" : "off") (client's choice)")
-            if !on { audio.reset() }
             s.audioEnabled.with { $0 = on }
+            if !sessions.contains(where: { $0.audioEnabled.get }) { audio.reset() }
         default:
             break
         }
@@ -812,16 +867,15 @@ final class HostController {
         receiveUDP(conn)
         // Drop flows that never say hello.
         queue.asyncAfter(deadline: .now() + 10) { [weak self, weak conn] in
-            guard let self, let conn else { return }
-            if let s = self.session, s.hasVideoPath, s.attach(udp: conn) == false { return }
-            if self.pendingUDP.contains(where: { $0 === conn }) && self.session?.hasVideoPath != true { conn.cancel() }
+            guard let self, let conn, !self.sessions.contains(where: { $0.owns(conn) }) else { return }
+            conn.cancel()
         }
     }
 
     private func receiveUDP(_ conn: NWConnection) {
         conn.receiveMessage { [weak self, weak conn] data, _, _, error in
             guard let self, let conn else { return }
-            if let data, let sessionId = UDPHello.parse(data), let s = self.session, s.id == sessionId,
+            if let data, let sessionId = UDPHello.parse(data), let s = self.sessions.first(where: { $0.id == sessionId }),
                UDPHello.verify(data, key: s.keys.video) {
                 if s.attach(udp: conn) {
                     Log.info("host: video path to \(conn.endpoint) ready for session \(s.id)")
@@ -845,13 +899,13 @@ final class HostController {
                 Log.info("host: HITCH this Mac stalled for \((now - self.lastWatchdogUs - 250_000) / 1000) ms (system busy?)")
             }
             self.lastWatchdogUs = now
-            guard let s = self.session else { return }
+            guard !self.sessions.isEmpty else { return }
             self.watchdogTicks += 1
-            if self.watchdogTicks % 4 == 0 { self.logStats(s) }
-            if Clock.nowUs() - s.lastPingUs > 3_000_000 {
-                self.endSession("no heartbeat from the client for 3 s")
-                return
+            if self.watchdogTicks % 4 == 0 { self.logStats() }
+            for s in self.sessions where Clock.nowUs() - s.lastPingUs > 3_000_000 {
+                self.endSession(s, "no heartbeat from the client for 3 s")
             }
+            guard !self.sessions.isEmpty else { return }
             self.pipeline.checkHealth(lastPointerUs: self.lastPointerUs, recentInputUs: self.recentInputUs)
         }
         timer.resume()
@@ -868,25 +922,40 @@ final class HostController {
     }
 
     /// Once a second while a client is connected. Counts only, never what was typed.
-    private func logStats(_ s: HostSession) {
+    /// Sent, Mbps, nacks and resends add up all clients; with more than one, each also gets its own line.
+    private func logStats() {
         let c = pipeline.counters.with { c -> PipelineCounters in
             let copy = c
             c.encodeMaxUs = 0
             c.biggestFrameBytes = 0
             return copy
         }
-        let sent = s.sent.get, bytes = s.sentBytes.get, nacks = s.nacks.get, resent = s.resentPackets.get
+        var total = (sent: UInt64(0), bytes: UInt64(0), nacks: UInt64(0), resent: UInt64(0))
+        var perClient: [(s: HostSession, sent: UInt64, bytes: UInt64, nacks: UInt64, resent: UInt64)] = []
+        for s in sessions {
+            let now = (sent: s.sent.get, bytes: s.sentBytes.get, nacks: s.nacks.get, resent: s.resentPackets.get)
+            let b = s.statsBaseline
+            let d = (s: s, sent: now.sent &- b.sent, bytes: now.bytes &- b.bytes, nacks: now.nacks &- b.nacks, resent: now.resent &- b.resent)
+            s.statsBaseline = now
+            perClient.append(d)
+            total = (total.sent + d.sent, total.bytes + d.bytes, total.nacks + d.nacks, total.resent + d.resent)
+        }
         let usage = resources.sample()
         let b = statsBaseline
-        let mbps = Double(bytes &- b.bytes) * 8 / 1_000_000
         Log.info(String(format: "stats: captured %llu encoded %llu sent %llu fps · %.1f Mbps · biggest frame %d KB · encode avg %.1f max %.1f ms · keyframes %llu · nacks %llu, resent %llu packets · input %d moves %d clicks %d keys %d scrolls · bb1 cpu %.0f%% mem %.0f MB",
-                        c.captured &- b.captured, c.encoded &- b.encoded, sent &- b.sent, mbps, c.biggestFrameBytes / 1000,
-                        c.encodeAvgUs / 1000, Double(c.encodeMaxUs) / 1000, c.keyframes &- b.keyframes,
-                        nacks &- b.nacks, resent &- b.resent, input.moves, input.clicks, input.keys, input.scrolls,
+                        c.captured &- b.captured, c.encoded &- b.encoded, total.sent, Double(total.bytes) * 8 / 1_000_000,
+                        c.biggestFrameBytes / 1000, c.encodeAvgUs / 1000, Double(c.encodeMaxUs) / 1000, c.keyframes &- b.keyframes,
+                        total.nacks, total.resent, input.moves, input.clicks, input.keys, input.scrolls,
                         usage.cpuPercent, usage.memoryMB))
-        statsBaseline = (sent, bytes, c.captured, c.encoded, c.keyframes, nacks, resent)
+        if perClient.count > 1 {
+            for d in perClient {
+                Log.info(String(format: "stats: to %@ sent %llu fps · %.1f Mbps · nacks %llu, resent %llu packets",
+                                d.s.name, d.sent, Double(d.bytes) * 8 / 1_000_000, d.nacks, d.resent))
+            }
+        }
+        statsBaseline = (c.captured, c.encoded, c.keyframes)
         input = (0, 0, 0, 0)
-        adaptRate(s, packets: (bytes &- b.bytes) / 1200, resent: resent &- b.resent)
+        for d in perClient { adaptRate(d.s, packets: d.bytes / 1200, resent: d.resent) }
     }
 
     /// Lost packets mean we're sending more than the path carries (a relay, a far-away Mac, busy Wi-Fi):
@@ -910,8 +979,9 @@ final class HostController {
     private func setRate(_ rate: Double, for s: HostSession, because reason: String) {
         let full = pipeline.info.map { pipeline.settings.bitrateMbps ?? StreamPipeline.defaultBitrate(width: $0.width, height: $0.height) } ?? 30
         s.setRate(rate, bitrateMbps: max(3, Int(Double(full) * rate)))
-        pipeline.setBitrateScale(rate)
-        Log.info(String(format: "host: sending at %.0f%% of full quality (%@)", rate * 100, reason))
+        // One encoder: its bitrate follows the slowest client. Each client keeps its own burst pacing.
+        pipeline.setBitrateScale(sessions.map(\.rate).min() ?? rate)
+        Log.info(String(format: "host: sending %@ at %.0f%% of full quality (%@)", s.name, rate * 100, reason))
     }
 
     /// Over a Tailscale relay, start at a rate a relay can carry instead of losing the first keyframe.
@@ -922,7 +992,7 @@ final class HostController {
             Log.info("host: \(s.name) is connected via Tailscale, \(path)")
             guard path.hasPrefix("relayed") else { return }
             self?.queue.async {
-                guard let self, self.session === s, s.rate > 0.4 else { return }
+                guard let self, self.sessions.contains(where: { $0 === s }), s.rate > 0.4 else { return }
                 self.setRate(0.4, for: s, because: "Tailscale relay")
             }
         }

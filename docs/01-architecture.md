@@ -48,6 +48,10 @@ Video goes over **UDP**, not TCP, so one lost packet doesn't hold up later frame
 - **At home:** client connects to the host's LAN address directly.
 - **Away:** same protocol over the host's Tailscale address. Tailscale handles getting through routers; when it gets a direct path, it adds very little latency. The client shows whether the path is direct or relayed.
 
+## Several clients at once
+
+Up to 4 computers can be connected to one host at the same time. They all see the same screen and can all use the mouse and keyboard. There's one capture and one encoder; each client gets its own copy of every frame, with its own frame numbers, resends, pacing and heartbeat. Shared settings follow the clients together: the codec is one they can all decode, the bitrate follows the slowest connection, and the pointer is drawn into the picture if any client wants it. When the same computer connects again (its old connection hasn't timed out yet), the new connection replaces the old one, which is told so it doesn't reconnect.
+
 ## Discovery and pairing
 
 - On the LAN the host advertises itself with Bonjour (`_bb1._udp`), so the client lists it without typing an IP.
