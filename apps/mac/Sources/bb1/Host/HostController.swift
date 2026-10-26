@@ -580,7 +580,11 @@ final class HostController {
     }
 
     private func startSession(_ channel: ControlChannel, keys: SessionKeys) {
-        if session != nil { endSession("replaced by a new connection from \(channel.peerName)") }
+        // Without the bye, the replaced client reconnects at once and replaces this one: two clients
+        // took turns several times a second.
+        if session != nil {
+            endSession("replaced by a new connection from \(channel.peerName)", bye: "\(channel.peerName) connected to this Mac")
+        }
         nextSessionId &+= 1
         let s = HostSession(id: nextSessionId, control: channel, keys: keys, name: channel.peerName, paceMbps: options.paceMbps)
         s.dropPercent = options.dropPercent
@@ -697,7 +701,8 @@ final class HostController {
         DispatchQueue.main.async { Updater.shared.installBuild(build, report: reply) }
     }
 
-    private func endSession(_ reason: String) {
+    /// With `bye`, the client is told why before the connection closes, so it stops instead of reconnecting.
+    private func endSession(_ reason: String, bye: String? = nil) {
         guard let s = session else { return }
         Log.info("host: session \(s.id) with \(s.name) ended: \(reason)")
         session = nil
@@ -706,7 +711,12 @@ final class HostController {
         pipeline.setShowsCursor(true)
         clipboard.stop()
         clipboard.onLocalCopy = nil
-        s.close()
+        if let bye {
+            s.control.send(.bye(bye))
+            queue.asyncAfter(deadline: .now() + 0.2) { s.close() }
+        } else {
+            s.close()
+        }
         injector.releaseAll()
         pipeline.stop()
         if let activity { ProcessInfo.processInfo.endActivity(activity) }
