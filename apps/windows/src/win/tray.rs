@@ -121,6 +121,10 @@ impl HostEvents for Events {
         changed();
         app::post(app::UiEvent::HostsChanged);
     }
+    fn update_requested(&self, build: i64) -> Result<(), String> {
+        Events::update(build)
+    }
+
     fn viewers_changed(&self, names: &[String]) {
         let before = view(|v| std::mem::replace(&mut v.viewers, names.to_vec()));
         for joined in names.iter().filter(|n| !before.contains(n)) {
@@ -128,6 +132,15 @@ impl HostEvents for Events {
         }
         changed();
         app::post(app::UiEvent::HostsChanged);
+    }
+}
+
+impl Events {
+    fn update(build: i64) -> Result<(), String> {
+        match crate::win::selfupdate::quiet_install() {
+            Some(install) => install(build),
+            None => Err("this PC's bb1 can't update from another computer yet: update it once from its own window".into()),
+        }
     }
 }
 

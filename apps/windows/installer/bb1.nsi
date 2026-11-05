@@ -50,6 +50,7 @@ VIAddVersionKey "LegalCopyright" "Copyright (C) 2026 the ${APP} authors. GPL-3.0
 !include MUI2.nsh
 !include LogicLib.nsh
 !include x64.nsh
+!include FileFunc.nsh
 
 !define MUI_ICON "..\res\bb1.ico"
 !define MUI_UNICON "..\res\bb1.ico"
@@ -87,21 +88,56 @@ Function RunUnelevated
   Exec '"$WINDIR\explorer.exe" "$INSTDIR\${APP}.exe"'
 FunctionEnd
 
-; bb1 updating itself runs this quietly (/S): open the new bb1 again when it's done.
+; bb1 updating itself runs this quietly (/S): open the new bb1 again when it's done. Not with
+; /NORUN: the update task runs it as SYSTEM, and its helper opens bb1 on the desktop instead.
 Function .onInstSuccess
+  ${GetParameters} $R0
+  ClearErrors
+  ${GetOptions} $R0 "/NORUN" $R1
   ${If} ${Silent}
+  ${AndIf} ${Errors}
     Call RunUnelevated
   ${EndIf}
 FunctionEnd
 
 ; Ask a running copy to quit (it quits at once), then make sure it's gone,
 ; so bb1.exe can be replaced.
+; Not in session 0: that's the update task's own bb1 (as SYSTEM), which is running this installer.
 !macro CloseRunning
-  nsExec::Exec 'taskkill /im ${APP}.exe'
+  nsExec::Exec 'taskkill /fi "IMAGENAME eq ${APP}.exe" /fi "SESSION ne 0"'
   Pop $0
   Sleep 1000
-  nsExec::Exec 'taskkill /f /im ${APP}.exe'
+  nsExec::Exec 'taskkill /f /fi "IMAGENAME eq ${APP}.exe" /fi "SESSION ne 0"'
   Pop $0
+!macroend
+
+; The "bb1 Update" task: runs `bb1.exe --apply-update` as SYSTEM when any signed-in user starts it,
+; so bb1 updates without an admin prompt (needed when another computer asks it to). It only installs
+; a bb1 release from GitHub whose installer matches the release's checksums (win/selfupdate.rs).
+!macro RegisterUpdateTask
+  InitPluginsDir
+  FileOpen $0 "$PLUGINSDIR\update-task.xml" w
+  FileWriteWord $0 0xFEFF
+  FileWriteUTF16LE $0 '<?xml version="1.0" encoding="UTF-16"?>$\r$\n'
+  FileWriteUTF16LE $0 '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">$\r$\n'
+  FileWriteUTF16LE $0 '  <RegistrationInfo><Description>Installs bb1 updates without an admin prompt.</Description>'
+  FileWriteUTF16LE $0 '<SecurityDescriptor>D:(A;;FA;;;SY)(A;;FA;;;BA)(A;;GRGX;;;AU)</SecurityDescriptor></RegistrationInfo>$\r$\n'
+  FileWriteUTF16LE $0 '  <Principals><Principal id="Author"><UserId>S-1-5-18</UserId><RunLevel>HighestAvailable</RunLevel></Principal></Principals>$\r$\n'
+  FileWriteUTF16LE $0 '  <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>'
+  FileWriteUTF16LE $0 '<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT15M</ExecutionTimeLimit>'
+  FileWriteUTF16LE $0 '<AllowStartOnDemand>true</AllowStartOnDemand><Enabled>true</Enabled></Settings>$\r$\n'
+  FileWriteUTF16LE $0 '  <Actions Context="Author"><Exec><Command>$INSTDIR\${APP}.exe</Command><Arguments>--apply-update</Arguments></Exec></Actions>$\r$\n'
+  FileWriteUTF16LE $0 '</Task>$\r$\n'
+  FileClose $0
+  nsExec::ExecToLog 'schtasks /create /tn "${APP} Update" /xml "$PLUGINSDIR\update-task.xml" /f'
+  Pop $0
+  ; Where bb1 asks for an update and reads how it went (users write, the task reads).
+  ; ($APPDATA is %ProgramData% with the shell context set to all users.)
+  SetShellVarContext all
+  CreateDirectory "$APPDATA\${APP}"
+  nsExec::Exec 'icacls "$APPDATA\${APP}" /grant *S-1-5-32-545:(OI)(CI)M'
+  Pop $0
+  SetShellVarContext current
 !macroend
 
 Section "Tell Microsoft Defender to leave ${APP} alone" SecDefender
@@ -138,6 +174,8 @@ Section "-${APP}" SecApp
     Delete /REBOOTOK "$INSTDIR\SDL3.old.dll"
   File "/oname=SDL3.dll" "${SDL}"
   WriteUninstaller "$INSTDIR\Uninstall ${APP}.exe"
+
+  !insertmacro RegisterUpdateTask
 
   ; Let bb1 hear Macs on the home network (Bonjour answers) and their video, on any network type:
   ; Windows often calls a home network "Public". bb1 itself doesn't accept connections.
@@ -182,6 +220,8 @@ Section "Uninstall"
   ${EndIf}
 
   nsExec::Exec 'netsh advfirewall firewall delete rule name="${APP}"'
+  Pop $0
+  nsExec::Exec 'schtasks /delete /tn "${APP} Update" /f'
   Pop $0
 
   SetShellVarContext all

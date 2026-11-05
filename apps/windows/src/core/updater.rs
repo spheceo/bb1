@@ -41,7 +41,7 @@ pub fn build_name(build: i64) -> String {
     if build > 25 { format!("nightly-{}", build - 25) } else { format!("build {build}") }
 }
 
-const FEED: &str = "https://api.github.com/repos/spheceo/bb1/releases?per_page=30";
+pub(crate) const FEED: &str = "https://api.github.com/repos/spheceo/bb1/releases?per_page=30";
 const CHECK_EVERY: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Clone, Debug, PartialEq)]
@@ -53,6 +53,8 @@ pub struct Release {
     pub installer_url: String,
     pub installer_name: String,
     pub size: u64,
+    /// The release's SHA256SUMS (the installer's checksum is in it).
+    pub sums_url: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -219,7 +221,10 @@ impl Updater {
 
     /// Update `macs` (each with the build it runs) to the newest build, then this PC if it's behind.
     /// `launch` starts the downloaded installer (asking for admin); it returns false if that was refused.
-    pub fn update(&self, macs: Vec<(Target, i64)>, launch: impl Fn(&std::path::Path) -> Result<(), String> + Send + 'static) {
+    /// `quiet`: installs a build without asking anyone (Windows' update task), when this install has
+    /// one; it's tried before downloading, and `launch` (the installer with an admin prompt) otherwise.
+    pub fn update(&self, macs: Vec<(Target, i64)>, launch: impl Fn(&std::path::Path) -> Result<(), String> + Send + 'static,
+                  quiet: Option<QuietInstall>) {
         let Some(release) = self.latest() else { return };
         if self.busy() {
             return;
@@ -266,6 +271,18 @@ impl Updater {
                 (me.changed)();
                 return;
             }
+            if let Some(quiet) = &quiet {
+                me.set(Phase::Installing);
+                let marker = JustUpdated { from: BUILD, to: release.build };
+                let _ = std::fs::write(JustUpdated::path(), serde_json::to_vec(&marker).unwrap_or_default());
+                match quiet(release.build) {
+                    Ok(()) => return,
+                    Err(e) => {
+                        let _ = std::fs::remove_file(JustUpdated::path());
+                        logi!("update: the quiet installer didn't start ({e}); using the installer");
+                    }
+                }
+            }
             me.set(Phase::Downloading(0.0));
             let dir = std::env::temp_dir().join("bb1-update");
             let _ = std::fs::create_dir_all(&dir);
@@ -287,6 +304,9 @@ impl Updater {
         });
     }
 }
+
+/// Installs a given build without asking anyone; Ok once it's on its way (bb1 then quits).
+pub type QuietInstall = Box<dyn Fn(i64) -> Result<(), String> + Send + Sync>;
 
 /// Ask one Mac to update itself, follow along, then wait until it's back on the new build.
 /// Returns the build it runs now.
@@ -427,6 +447,7 @@ pub fn parse(json: &[u8]) -> Result<Vec<Release>, String> {
                 installer_url: exe.browser_download_url.clone(),
                 installer_name: exe.name.clone(),
                 size: exe.size,
+                sums_url: r.assets.iter().find(|a| a.name == "SHA256SUMS").map(|a| a.browser_download_url.clone()),
             })
         })
         .collect())

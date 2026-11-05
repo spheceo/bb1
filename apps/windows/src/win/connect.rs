@@ -970,15 +970,19 @@ fn start_update() {
     let Some((dir, updater)) = with(|h| (h.directory.clone(), h.updater.clone())) else { return };
     let macs = macs_behind(&dir, &updater);
     set_status("");
-    updater.update(macs, |installer| {
-        let r = launch_installer(installer);
-        if r.is_ok() {
-            // The installer closes bb1 too; quit first so it doesn't have to.
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            std::process::exit(0);
-        }
-        r
-    });
+    updater.update(
+        macs,
+        |installer| {
+            let r = launch_installer(installer);
+            if r.is_ok() {
+                // The installer closes bb1 too; quit first so it doesn't have to.
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                std::process::exit(0);
+            }
+            r
+        },
+        crate::win::selfupdate::quiet_install(),
+    );
     invalidate();
 }
 

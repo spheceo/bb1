@@ -102,6 +102,11 @@ pub trait HostEvents: Send + Sync + 'static {
     fn pairing_code(&self, device: &str, code: &str);
     fn pairing_finished(&self, paired: bool);
     fn viewers_changed(&self, names: &[String]);
+    /// Another computer asked this one to update to `build` (newer than this one). Ok: it's being
+    /// installed and this app will quit and come back as that build.
+    fn update_requested(&self, _build: i64) -> Result<(), String> {
+        Err("update bb1 on the PC from its own window".into())
+    }
 }
 
 /// What a viewer may do on this computer. All on when it connects; the owner can turn each off live.
@@ -693,15 +698,38 @@ fn update_connection(shared: &Arc<Shared>, authed: Authed, writer: (TcpStream, S
             // No screen previews from a Windows host yet: say so, so the list shows the name.
             Some(Msg::RequestPreview { .. }) => send(&Msg::Preview(v(PreviewMsg { jpeg: None, capture_ms: 0.0 }))),
             Some(Msg::UpdateHost { build }) => {
-                logi!("host: {} asked this PC to update to build {build}; not supported yet", authed.hello.name);
-                send(&Msg::UpdateStatus(v(UpdateStatusMsg {
-                    phase: "failed".into(),
-                    progress: None,
-                    detail: Some("update bb1 on the PC from its own window".into()),
-                })));
+                let done = handle_update_request(shared, &authed.hello.name, build, &send);
+                if done {
+                    return Ok(());
+                }
             }
             Some(Msg::Bye(_)) => return Ok(()),
             _ => {}
+        }
+    }
+}
+
+/// Another computer asked this one to update (like a Mac host does): the app installs it and quits;
+/// the asker waits for this host to come back with the new build. Returns true if it's on its way.
+fn handle_update_request(shared: &Shared, who: &str, build: i64, send: &dyn Fn(&Msg)) -> bool {
+    let status = |phase: &str, detail: Option<String>| {
+        send(&Msg::UpdateStatus(v(UpdateStatusMsg { phase: phase.into(), progress: None, detail })));
+    };
+    if build <= crate::core::updater::BUILD {
+        status("upToDate", None);
+        return false;
+    }
+    logi!("host: {who} asked this PC to update from build {} to {build}", crate::core::updater::BUILD);
+    status("installing", None);
+    match shared.events.update_requested(build) {
+        Ok(()) => {
+            status("restarting", None);
+            true
+        }
+        Err(e) => {
+            logi!("host: couldn't update: {e}");
+            status("failed", Some(e));
+            false
         }
     }
 }
@@ -858,11 +886,10 @@ fn stream_session(shared: &Arc<Shared>, authed: Authed, writer: (TcpStream, Stre
                 logi!("host: sound {} for {} (client's choice)", if on.v { "on" } else { "off" }, s.name);
                 s.audio.store(on.v, Relaxed);
             }
-            Msg::UpdateHost { .. } => s.send(&Msg::UpdateStatus(v(UpdateStatusMsg {
-                phase: "failed".into(),
-                progress: None,
-                detail: Some("update bb1 on the PC from its own window".into()),
-            }))),
+            Msg::UpdateHost { build } => {
+                let s2 = s.clone();
+                handle_update_request(shared, &s.name, build, &move |m: &Msg| s2.send(m));
+            }
             Msg::Bye(why) => break Err(format!("client said bye: {}", why.v)),
             _ => {}
         }

@@ -9,6 +9,7 @@ mod connect;
 mod cursor;
 mod decoder;
 pub mod gamepad;
+pub mod selfupdate;
 pub(crate) mod gfx;
 mod render;
 mod stream;

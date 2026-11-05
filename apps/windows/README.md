@@ -15,6 +15,8 @@ In the stream window:
 - **Right-click the title bar** for: full screen, which PC key is ⌘ (Windows key, Alt for Mac key positions, or Ctrl so Ctrl+C copies), sound, clipboard sharing, refresh picture, disconnect.
 - The title bar shows frame rate, bitrate, round trip and how far behind the picture is.
 
+**Updates without an admin prompt:** the installer registers the task "bb1 Update" (runs `bb1.exe --apply-update` as SYSTEM; any signed-in user may start it). bb1 writes the wanted build to `%ProgramData%\bb1\update-request.json` and starts it; the task installs only that bb1 release from GitHub, after checking its installer against the release's SHA256SUMS, and logs to `%ProgramData%\bb1\update.log`. That's how another computer can update this PC. `win/selfupdate.rs`.
+
 **Updates:** when a newer nightly is on GitHub, Your Macs shows **Update to nightly-N** at the top right. It updates your Macs that are behind, then this PC (Windows asks once for admin), and bb1 opens again as the new build. `"nightly": false` in `%APPDATA%\bb1\settings.json` sticks to releases.
 
 **bb1 by the clock:** bb1's icon in the notification area (maybe under the ^ arrow; drag it onto the taskbar to keep it in sight) opens Your Macs on a click. Right-click it to **share this PC**, see who's watching, disconnect them, or quit. Closing Your Macs leaves bb1 running there.
