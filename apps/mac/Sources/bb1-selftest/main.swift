@@ -93,6 +93,16 @@ let msgs: [ControlMessage] = [.key(KeyMsg(code: 55, down: true, isRepeat: false)
 let roundTrip = try msgs.map { try JSONDecoder().decode(ControlMessage.self, from: JSONEncoder().encode($0)) }
 check("control messages round trip", roundTrip.count == 3)
 
+// Leaving apps out of the shared sound
+let discordOnly = Set(SoundApps.mutedByDefault)
+check("muted app is left out", SoundApps.isMuted("com.hnc.Discord", muted: discordOnly))
+check("its helpers are left out too", SoundApps.isMuted("com.hnc.Discord.helper.Renderer", muted: discordOnly))
+check("other apps keep their sound", !SoundApps.isMuted("com.google.Chrome", muted: discordOnly)
+      && !SoundApps.isMuted("com.hnc.DiscordPTB", muted: discordOnly) && !SoundApps.isMuted("com.apple.Music", muted: discordOnly))
+check("Chrome's helper counts as Chrome", SoundApps.isMuted("com.google.Chrome.helper", muted: ["com.google.Chrome"]))
+check("any Helium bundle id counts", SoundApps.isMuted("net.imput.helium.beta", muted: ["net.imput.helium"])
+      && SoundApps.isMuted("net.imput.heliumhelper", muted: ["net.imput.helium"]))
+
 print(failures == 0 ? "\nAll checks passed." : "\n\(failures) check(s) failed.")
 exit(failures == 0 ? 0 : 1)
 

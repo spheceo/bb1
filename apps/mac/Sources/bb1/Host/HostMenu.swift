@@ -62,7 +62,31 @@ final class HostRole: NSObject {
         if hasProblem && s.listenerError == nil && s.lastError == nil {
             action("Permissions Needed…", "exclamationmark.triangle", #selector(showStatus))
         }
-        if s.clientName != nil { action("Disconnect Client", "xmark.circle", #selector(disconnect)) }
+        // Each viewer: what it may use (checked = on), and disconnecting just that one.
+        for v in s.viewers {
+            let sub = NSMenu()
+            sub.autoenablesItems = false
+            for access in HostController.Access.allCases {
+                let item = NSMenuItem(title: access.title, action: #selector(toggleAccess(_:)), keyEquivalent: "")
+                item.target = self
+                item.tag = Int(v.id)
+                item.representedObject = access.rawValue
+                item.image = NSImage(systemSymbolName: access.symbol, accessibilityDescription: nil)
+                item.state = v.allows(access) ? .on : .off
+                sub.addItem(item)
+            }
+            sub.addItem(.separator())
+            let bye = NSMenuItem(title: "Disconnect \(v.name)", action: #selector(disconnectViewer(_:)), keyEquivalent: "")
+            bye.target = self
+            bye.tag = Int(v.id)
+            bye.image = NSImage(systemSymbolName: "xmark.circle", accessibilityDescription: nil)
+            sub.addItem(bye)
+            let item = NSMenuItem(title: v.name, action: nil, keyEquivalent: "")
+            item.image = NSImage(systemSymbolName: "desktopcomputer", accessibilityDescription: nil)
+            item.submenu = sub
+            menu.addItem(item)
+        }
+        if !s.viewers.isEmpty { action(s.viewers.count > 1 ? "Disconnect All" : "Disconnect Client", "xmark.circle", #selector(disconnect)) }
     }
 
     /// For Settings ▸ Test Recovery.
@@ -101,6 +125,13 @@ final class HostRole: NSObject {
     }
 
     @objc private func disconnect() { host.disconnectClient() }
+
+    @objc private func toggleAccess(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let access = HostController.Access(rawValue: raw) else { return }
+        host.setAccess(access, sender.state != .on, viewer: UInt32(sender.tag))
+    }
+
+    @objc private func disconnectViewer(_ sender: NSMenuItem) { host.disconnect(viewer: UInt32(sender.tag)) }
     @objc private func showStatus() { showStatusWindow() }
 
     @objc private func injectFault(_ sender: NSMenuItem) {

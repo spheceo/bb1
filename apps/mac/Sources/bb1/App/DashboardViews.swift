@@ -538,6 +538,144 @@ final class MacTile: NSView {
     }
 }
 
+/// "Sharing this Mac", above Your Macs while this Mac is shared: who's watching, what each of them may
+/// use (on = solid, off = outline), and a Disconnect for each. Rows are kept, so hover doesn't flicker.
+final class SharingPanel: NSView {
+    var onAccess: ((UInt32, HostController.Access, Bool) -> Void)?
+    var onDisconnect: ((UInt32) -> Void)?
+    private let header = NSTextField(labelWithString: "")
+    private let stack = NSStackView()
+    private var group: SettingsGroup?
+    private var rows: [UInt32: ViewerRow] = [:]
+    private var order: [UInt32] = []
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        header.lineBreakMode = .byTruncatingTail
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 12
+        stack.addArrangedSubview(header)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.topAnchor.constraint(equalTo: topAnchor),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    func update(_ viewers: [HostController.Viewer]) {
+        let line = NSMutableAttributedString(string: "● ", attributes: [.foregroundColor: Style.online, .font: NSFont.systemFont(ofSize: 9)])
+        line.append(NSAttributedString(string: "Sharing this Mac", attributes: [
+            .foregroundColor: NSColor.white, .font: NSFont.systemFont(ofSize: 14, weight: .semibold)]))
+        let who = viewers.isEmpty ? "nobody's watching" : "\(viewers.count) watching"
+        line.append(NSAttributedString(string: "  ·  \(who)", attributes: [
+            .foregroundColor: NSColor.white.withAlphaComponent(0.45), .font: NSFont.systemFont(ofSize: 12.5)]))
+        header.attributedStringValue = line
+
+        for v in viewers {
+            let row = rows[v.id] ?? ViewerRow(id: v.id)
+            row.onAccess = { [weak self] id, access, on in self?.onAccess?(id, access, on) }
+            row.onDisconnect = { [weak self] id in self?.onDisconnect?(id) }
+            row.configure(v)
+            rows[v.id] = row
+        }
+        let ids = viewers.map(\.id)
+        rows = rows.filter { ids.contains($0.key) }
+        guard ids != order else { return }
+        // Someone joined or left: a new card with the rows (SettingsGroup draws the lines between them).
+        order = ids
+        group?.removeFromSuperview()
+        group = nil
+        guard !ids.isEmpty else { return }
+        let g = SettingsGroup(rows: ids.compactMap { rows[$0] })
+        stack.addArrangedSubview(g)
+        g.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        group = g
+    }
+}
+
+/// One computer watching this Mac: its name, Mouse · Keyboard · Controller, and Disconnect.
+final class ViewerRow: NSStackView {
+    let id: UInt32
+    var onAccess: ((UInt32, HostController.Access, Bool) -> Void)?
+    var onDisconnect: ((UInt32) -> Void)?
+    private let name = Style.label("", size: 13.5, weight: .medium, color: .white)
+    private let detail = Style.label("", size: 12, color: NSColor.white.withAlphaComponent(0.45))
+    private var pills: [HostController.Access: PillButton] = [:]
+    private var allowed: [HostController.Access: Bool] = [:]
+
+    init(id: UInt32) {
+        self.id = id
+        super.init(frame: .zero)
+        name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        detail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let text = NSStackView(views: [name, detail])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 2
+        text.setContentHuggingPriority(.init(1), for: .horizontal)
+        var views: [NSView] = [text]
+        for access in HostController.Access.allCases {
+            let pill = PillButton(access.title, kind: .primary, target: self, action: #selector(pillClicked(_:)))
+            pill.small = true
+            pill.image = NSImage(systemSymbolName: access.symbol, accessibilityDescription: nil)?
+                .withSymbolConfiguration(.init(pointSize: 10.5, weight: .semibold))
+            pill.imagePosition = .imageLeading
+            pill.imageHugsTitle = true
+            pill.tag = HostController.Access.allCases.firstIndex(of: access)!
+            pill.setContentCompressionResistancePriority(.required, for: .horizontal)
+            pills[access] = pill
+            views.append(pill)
+        }
+        let disconnect = PillButton("Disconnect", kind: .secondary, target: self, action: #selector(disconnectClicked))
+        disconnect.small = true
+        disconnect.setContentCompressionResistancePriority(.required, for: .horizontal)
+        views.append(disconnect)
+        setViews(views, in: .leading)
+        orientation = .horizontal
+        alignment = .centerY
+        distribution = .fill
+        spacing = 6
+        setCustomSpacing(16, after: text)
+        if let last = pills[.controller] { setCustomSpacing(16, after: last) }
+        edgeInsets = NSEdgeInsets(top: 13, left: 16, bottom: 13, right: 16)
+        heightAnchor.constraint(greaterThanOrEqualToConstant: 52).isActive = true
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    func configure(_ v: HostController.Viewer) {
+        if name.stringValue != v.name { name.stringValue = v.name }
+        let joined = "Joined \(ComputersPage.ago(v.connectedAt))"
+        if detail.stringValue != joined { detail.stringValue = joined }
+        for access in HostController.Access.allCases { set(access, v.allows(access), viewer: v.name) }
+    }
+
+    private func set(_ access: HostController.Access, _ on: Bool, viewer: String) {
+        guard let pill = pills[access] else { return }
+        allowed[access] = on
+        let kind: PillButton.Kind = on ? .primary : .secondary
+        if pill.kind != kind { pill.kind = kind }
+        pill.contentTintColor = on ? Style.ink : .labelColor
+        let what = access.rawValue
+        pill.toolTip = on ? "\(viewer) can use the \(what). Click to turn it off." : "\(viewer) can't use the \(what). Click to turn it on."
+    }
+
+    @objc private func pillClicked(_ sender: PillButton) {
+        let access = HostController.Access.allCases[sender.tag]
+        let on = !(allowed[access] ?? true)
+        set(access, on, viewer: name.stringValue) // right away; the host confirms with the next refresh
+        onAccess?(id, access, on)
+    }
+
+    @objc private func disconnectClicked() { onDisconnect?(id) }
+}
+
 /// Your Macs with no other Macs yet: what to do next.
 final class EmptyState: NSView {
     override init(frame: NSRect) {
@@ -546,7 +684,7 @@ final class EmptyState: NSView {
             ComputerArt.drawMark(in: rect.insetBy(dx: 1, dy: 1), opacity: 0.22)
             return true
         })
-        let title = Style.label("No other Macs yet", size: 15, weight: .semibold)
+        let title = Style.label("No other computers yet", size: 15, weight: .semibold)
         let detail = Style.label("Turn on Share This Mac in bb1 on another Mac signed in to your Tailscale,\nor add one by its address with +.",
                                  size: 12.5, color: NSColor.white.withAlphaComponent(0.45))
         detail.alignment = .center
@@ -858,4 +996,250 @@ final class SettingsGroup: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+}
+
+// MARK: - Sound
+
+extension SoundApps {
+    /// The ones on this Mac, with where they are (for the icon).
+    static func installed() -> [(app: App, url: URL)] {
+        all.compactMap { app in
+            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: app.id) { return (app, url) }
+            guard app.anyIdStartingWith else { return nil }
+            // A build with a longer bundle id (Helium's differ): look for the app itself.
+            let folders = [URL(fileURLWithPath: "/Applications"),
+                           FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications")]
+            for folder in folders {
+                let url = folder.appendingPathComponent("\(app.name).app")
+                if let id = Bundle(url: url)?.bundleIdentifier, id.hasPrefix(app.id) { return (app, url) }
+            }
+            return nil
+        }
+    }
+}
+
+/// "Don't share sound from": the muted apps' icons, overlapping like avatars, and their names. Click for
+/// the list; clicking an app there ticks it on or off and the list stays open, so several can be changed
+/// (an NSMenu would close after each). Clicking away or on the button again closes it.
+final class MutedAppsPicker: NSControl, NSPopoverDelegate {
+    private let apps: [(app: SoundApps.App, icon: NSImage)]
+    /// All muted bundle ids, including apps that aren't installed (kept for when they are).
+    private(set) var muted: Set<String>
+    var onChange: ((Set<String>) -> Void)?
+    private var popover: NSPopover?
+    private var rows: [MutedAppRow] = []
+    private var closedAt = Date.distantPast
+    private var hovering = false { didSet { needsDisplay = true } }
+    private var area: NSTrackingArea?
+
+    private static let font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+    private static let height: CGFloat = 30
+    private static let iconBox: CGFloat = 24
+    /// Each icon starts this far after the one before (they overlap by the rest).
+    private static let step: CGFloat = 14
+    private static let pad: CGFloat = 10
+    private static let chevron = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)?
+        .withSymbolConfiguration(.init(pointSize: 9, weight: .bold))
+
+    init(installed: [(app: SoundApps.App, url: URL)], muted: Set<String>) {
+        apps = installed.map { entry in
+            let icon = NSWorkspace.shared.icon(forFile: entry.url.path)
+            icon.size = NSSize(width: MutedAppsPicker.iconBox, height: MutedAppsPicker.iconBox)
+            return (entry.app, icon)
+        }
+        self.muted = muted
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        setContentHuggingPriority(.required, for: .horizontal)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    private var shown: [(app: SoundApps.App, icon: NSImage)] { apps.filter { muted.contains($0.app.id) } }
+
+    private var label: String {
+        let names = shown.map(\.app.shortName)
+        return names.isEmpty ? "None" : names.joined(separator: ", ")
+    }
+
+    private var labelText: NSAttributedString {
+        NSAttributedString(string: label, attributes: [
+            .font: MutedAppsPicker.font, .foregroundColor: NSColor.white.withAlphaComponent(shown.isEmpty ? 0.6 : 0.9)])
+    }
+
+    private var iconsWidth: CGFloat {
+        shown.isEmpty ? 0 : MutedAppsPicker.iconBox + CGFloat(shown.count - 1) * MutedAppsPicker.step + 6
+    }
+
+    override var intrinsicContentSize: NSSize {
+        let text = ceil(labelText.size().width)
+        let chevron = MutedAppsPicker.chevron?.size.width ?? 8
+        let left = shown.isEmpty ? MutedAppsPicker.pad + 2 : 5
+        return NSSize(width: left + iconsWidth + text + 7 + chevron + MutedAppsPicker.pad, height: MutedAppsPicker.height)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        // Same look as the outlined buttons.
+        let shape = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: bounds.height / 2 - 0.5, yRadius: bounds.height / 2 - 0.5)
+        NSColor.white.withAlphaComponent(hovering || popover != nil ? 0.1 : 0.05).setFill()
+        shape.fill()
+        NSColor.white.withAlphaComponent(0.16).setStroke()
+        shape.stroke()
+
+        var x: CGFloat = shown.isEmpty ? MutedAppsPicker.pad + 2 : 5
+        let box = MutedAppsPicker.iconBox
+        for (_, icon) in shown {
+            let r = NSRect(x: x, y: round((bounds.height - box) / 2), width: box, height: box)
+            // A thin ring in the window's colour around the icon's body (an app icon fills ~80% of its box),
+            // so overlapping icons stay apart.
+            let body = r.insetBy(dx: box * 0.098, dy: box * 0.098)
+            let ring = body.insetBy(dx: -1.5, dy: -1.5)
+            Style.background.setFill()
+            NSBezierPath(roundedRect: ring, xRadius: body.width * 0.225 + 1.5, yRadius: body.width * 0.225 + 1.5).fill()
+            icon.draw(in: r)
+            x += MutedAppsPicker.step
+        }
+        if !shown.isEmpty { x += box - MutedAppsPicker.step + 6 }
+        let text = labelText
+        let s = text.size()
+        text.draw(at: NSPoint(x: x, y: round((bounds.height - s.height) / 2)))
+        if let chevron = MutedAppsPicker.chevron {
+            let tinted = NSImage(size: chevron.size, flipped: false) { rect in
+                chevron.draw(in: rect)
+                NSColor.white.withAlphaComponent(0.5).set()
+                rect.fill(using: .sourceAtop)
+                return true
+            }
+            let c = chevron.size
+            tinted.draw(in: NSRect(x: bounds.width - MutedAppsPicker.pad - c.width, y: round((bounds.height - c.height) / 2),
+                                   width: c.width, height: c.height))
+        }
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let area { removeTrackingArea(area) }
+        let a = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+        addTrackingArea(a)
+        area = a
+    }
+
+    override func mouseEntered(with event: NSEvent) { hovering = true }
+    override func mouseExited(with event: NSEvent) { hovering = false }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+
+    override func mouseDown(with event: NSEvent) {
+        if let popover, popover.isShown {
+            popover.performClose(nil)
+            return
+        }
+        // Clicking here while the list is open closes it on the way in; don't open it again straight away.
+        if Date().timeIntervalSince(closedAt) < 0.3 { return }
+        showList()
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil { popover?.close() }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    private func showList() {
+        rows = apps.map { entry in
+            let row = MutedAppRow(app: entry.app, icon: entry.icon)
+            row.isChecked = muted.contains(entry.app.id)
+            row.onClick = { [weak self, weak row] in
+                guard let self, let row else { return }
+                self.toggle(entry.app.id)
+                row.isChecked = self.muted.contains(entry.app.id)
+            }
+            return row
+        }
+        let stack = NSStackView(views: rows)
+        stack.orientation = .vertical
+        stack.spacing = 2
+        stack.edgeInsets = NSEdgeInsets(top: 6, left: 6, bottom: 6, right: 6)
+        for row in rows { row.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -12).isActive = true }
+        let controller = NSViewController()
+        controller.view = stack
+        stack.widthAnchor.constraint(equalToConstant: 230).isActive = true
+        let p = NSPopover()
+        p.behavior = .transient
+        p.animates = false
+        p.appearance = NSAppearance(named: .darkAqua)
+        p.contentViewController = controller
+        p.delegate = self
+        popover = p
+        p.show(relativeTo: bounds, of: self, preferredEdge: .maxY)
+        needsDisplay = true
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        closedAt = Date()
+        popover = nil
+        rows = []
+        needsDisplay = true
+    }
+
+    private func toggle(_ id: String) {
+        if muted.contains(id) { muted.remove(id) } else { muted.insert(id) }
+        invalidateIntrinsicContentSize()
+        needsDisplay = true
+        onChange?(muted)
+    }
+}
+
+/// One app in the "Don't share sound from" list: its icon, its name and a tick when its sound is left out.
+final class MutedAppRow: NSView {
+    var onClick: (() -> Void)?
+    var isChecked = false { didSet { check.isHidden = !isChecked } }
+    private let check = NSImageView()
+    private var hovering = false { didSet { layer?.backgroundColor = NSColor.white.withAlphaComponent(hovering ? 0.08 : 0).cgColor } }
+    private var area: NSTrackingArea?
+
+    init(app: SoundApps.App, icon: NSImage) {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 6
+        let image = NSImageView(image: icon)
+        image.imageScaling = .scaleProportionallyUpOrDown
+        let name = Style.label(app.name, size: 13, color: .white)
+        check.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: "Sound left out")?
+            .withSymbolConfiguration(.init(pointSize: 11, weight: .bold))
+        check.contentTintColor = .white
+        check.isHidden = true
+        for v in [image, name, check] as [NSView] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(v)
+        }
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: 32),
+            image.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            image.centerYAnchor.constraint(equalTo: centerYAnchor),
+            image.widthAnchor.constraint(equalToConstant: 22),
+            image.heightAnchor.constraint(equalToConstant: 22),
+            name.leadingAnchor.constraint(equalTo: image.trailingAnchor, constant: 9),
+            name.centerYAnchor.constraint(equalTo: centerYAnchor),
+            name.trailingAnchor.constraint(lessThanOrEqualTo: check.leadingAnchor, constant: -8),
+            check.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            check.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let area { removeTrackingArea(area) }
+        let a = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+        addTrackingArea(a)
+        area = a
+    }
+
+    override func mouseEntered(with event: NSEvent) { hovering = true }
+    override func mouseExited(with event: NSEvent) { hovering = false }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+    override func mouseDown(with event: NSEvent) {}
+    override func mouseUp(with event: NSEvent) {
+        if bounds.contains(convert(event.locationInWindow, from: nil)) { onClick?() }
+    }
 }

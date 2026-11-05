@@ -352,6 +352,21 @@ impl Gfx {
         Some((bitmap, w as f32, h as f32))
     }
 
+    /// A premultiplied BGRA picture (app icons) as a bitmap, made once per key.
+    pub fn bgra(&mut self, key: &str, pixels: &[u8], w: u32, h: u32) -> Option<(ID2D1Bitmap, f32, f32)> {
+        if let Some((_, b, bw, bh)) = self.bitmaps.get(key) {
+            return Some((b.clone(), *bw, *bh));
+        }
+        let props = D2D1_BITMAP_PROPERTIES {
+            pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+            dpiX: 96.0,
+            dpiY: 96.0,
+        };
+        let bitmap = unsafe { self.t().CreateBitmap(D2D_SIZE_U { width: w, height: h }, Some(pixels.as_ptr() as _), w * 4, &props).ok()? };
+        self.bitmaps.insert(key.to_string(), (0, bitmap.clone(), w as f32, h as f32));
+        Some((bitmap, w as f32, h as f32))
+    }
+
     /// Fills `dest` with the picture, cropping to keep its shape (like the Mac's aspect fill).
     pub fn picture_fill(&mut self, bitmap: &ID2D1Bitmap, bw: f32, bh: f32, dest: D2D_RECT_F) {
         let (dw, dh) = (dest.right - dest.left, dest.bottom - dest.top);

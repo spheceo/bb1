@@ -76,7 +76,7 @@ final class HostDirectory {
         DispatchQueue.global().async {
             let status = Tailscale.status()
             let me = status?.selfLogin
-            let candidates = (status?.peers ?? []).filter { $0.online && $0.os == "macOS" && $0.login == me }
+            let candidates = (status?.peers ?? []).filter { $0.online && ($0.os == "macOS" || $0.os == "windows") && $0.login == me }
             var reachable: [(String, String)] = []
             let group = DispatchGroup()
             let lock = NSLock()

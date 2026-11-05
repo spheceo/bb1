@@ -2,6 +2,7 @@
 //! hardware H.264 decoder (Media Foundation), sound (WASAPI), keyboard hook and clipboard.
 
 pub mod app;
+pub mod apps;
 mod audio_out;
 mod clipboard;
 mod connect;
@@ -11,4 +12,5 @@ pub(crate) mod gfx;
 mod render;
 mod stream;
 pub(crate) mod tray;
+mod panels;
 pub(crate) mod util;

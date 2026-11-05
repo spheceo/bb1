@@ -77,6 +77,35 @@ pub trait HostEvents: Send + Sync + 'static {
     fn viewers_changed(&self, names: &[String]);
 }
 
+/// What a viewer may do on this computer. All on when it connects; the owner can turn each off live.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Access {
+    Mouse,
+    Keyboard,
+    /// Game controllers (coming: the flag is kept and shown already).
+    Controller,
+}
+
+impl Access {
+    pub fn label(self) -> &'static str {
+        match self {
+            Access::Mouse => "mouse",
+            Access::Keyboard => "keyboard",
+            Access::Controller => "controller",
+        }
+    }
+}
+
+/// A connected viewer, for the owner's list.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Viewer {
+    pub id: u32,
+    pub name: String,
+    pub mouse: bool,
+    pub keyboard: bool,
+    pub controller: bool,
+}
+
 #[derive(Clone)]
 pub struct HostConfig {
     pub name: String,
@@ -171,6 +200,9 @@ struct Session {
     audio_seq: AtomicU32,
     recent_audio: Mutex<VecDeque<Vec<u8>>>,
     ended: AtomicBool,
+    mouse: AtomicBool,
+    keyboard: AtomicBool,
+    controller: AtomicBool,
     /// Recently sent frames, for resends.
     recent: Mutex<HashMap<u32, (u64, Arc<Vec<Vec<u8>>>)>>,
     frames: Sender<Arc<Vec<Vec<u8>>>>,
@@ -217,7 +249,7 @@ struct Shared {
     sessions: Mutex<Vec<Arc<Session>>>,
     udp: UdpSocket,
     video: Sender<VideoCommand>,
-    pairing: Mutex<Option<(u64, String)>>, // (connection, device name)
+    pairing: Mutex<Option<(u64, String)>>, // (connection, device ID or name)
     next_session: AtomicU32,
     next_connection: AtomicU64,
     captured: AtomicU64,
@@ -227,6 +259,9 @@ struct Shared {
     own_login: Mutex<Option<(String, Instant)>>,
     /// Announces this host on the home network (Bonjour), like the Mac host.
     bonjour: Option<mdns_sd::ServiceDaemon>,
+    /// Who may sign in (changeable while sharing).
+    allow_tailscale: AtomicBool,
+    allow_pairing: AtomicBool,
 }
 
 /// A running host. Dropping it doesn't stop it; call `stop`.
@@ -258,6 +293,8 @@ impl Host {
             stopped: AtomicBool::new(false),
             own_login: Mutex::new(None),
             bonjour: advertise(&cfg.name, cfg.control_port),
+            allow_tailscale: AtomicBool::new(cfg.allow_tailscale),
+            allow_pairing: AtomicBool::new(cfg.allow_pairing),
         });
         logi!("host: {} sharing a {}x{} screen on ports {} and {}", cfg.name, size.0, size.1, cfg.control_port, cfg.video_port);
 
@@ -301,8 +338,52 @@ impl Host {
         }
     }
 
-    pub fn viewers(&self) -> Vec<String> {
-        self.shared.sessions.lock().unwrap().iter().map(|s| s.name.clone()).collect()
+    /// Who may sign in from now on (people already connected stay).
+    pub fn set_policy(&self, allow_tailscale: bool, allow_pairing: bool) {
+        self.shared.allow_tailscale.store(allow_tailscale, Relaxed);
+        self.shared.allow_pairing.store(allow_pairing, Relaxed);
+    }
+
+    pub fn viewers(&self) -> Vec<Viewer> {
+        self.shared.sessions.lock().unwrap().iter().map(|s| Viewer {
+            id: s.id,
+            name: s.name.clone(),
+            mouse: s.mouse.load(Relaxed),
+            keyboard: s.keyboard.load(Relaxed),
+            controller: s.controller.load(Relaxed),
+        }).collect()
+    }
+
+    /// Let a viewer use the mouse, keyboard or controllers, or not. Turning one off lets go of
+    /// whatever it was holding, and the viewer is told.
+    pub fn set_access(&self, id: u32, what: Access, on: bool) {
+        let Some(s) = self.shared.sessions.lock().unwrap().iter().find(|s| s.id == id).cloned() else { return };
+        let flag = match what {
+            Access::Mouse => &s.mouse,
+            Access::Keyboard => &s.keyboard,
+            Access::Controller => &s.controller,
+        };
+        if flag.swap(on, Relaxed) == on {
+            return;
+        }
+        logi!("host: {} for {} {}", what.label(), s.name, if on { "allowed" } else { "turned off" });
+        if !on {
+            self.shared.input.lock().unwrap().release_all();
+        }
+        let host = &self.shared.cfg.name;
+        s.send(&Msg::Notice(v(if on {
+            format!("{host} gave you back the {}.", what.label())
+        } else {
+            format!("{host} turned off your {}.", what.label())
+        })));
+        let names: Vec<String> = self.shared.sessions.lock().unwrap().iter().map(|s| s.name.clone()).collect();
+        self.shared.events.viewers_changed(&names);
+    }
+
+    /// Disconnect one viewer (it's told why, so it doesn't reconnect).
+    pub fn disconnect(&self, id: u32) {
+        let Some(s) = self.shared.sessions.lock().unwrap().iter().find(|s| s.id == id).cloned() else { return };
+        end_session(&self.shared, &s, "disconnected by the host", Some(&format!("{} disconnected you", self.shared.cfg.name)));
     }
 
     pub fn cancel_pairing(&self) {
@@ -400,7 +481,7 @@ fn handshake(shared: &Arc<Shared>, stream: &mut TcpStream, connection_id: u64) -
             None => return Err(reject(stream, &format!("this PC doesn't remember {} any more. Pair it again.", hello.name))),
         },
         "tailscale" => {
-            if !cfg.allow_tailscale {
+            if !shared.allow_tailscale.load(Relaxed) {
                 return Err(reject(stream, "Tailscale sign-in is turned off on the host"));
             }
             let Some(ip) = remote.map(|ip| plain_ip(ip).to_string()).filter(|ip| tailscale::is_tailscale_ip(ip)) else {
@@ -420,15 +501,17 @@ fn handshake(shared: &Arc<Shared>, stream: &mut TcpStream, connection_id: u64) -
             }
         }
         "code" => {
-            if !cfg.allow_pairing {
+            if !shared.allow_pairing.load(Relaxed) {
                 return Err(reject(stream, "pairing new computers is turned off on the host"));
             }
             {
                 let mut p = shared.pairing.lock().unwrap();
-                if p.as_ref().is_some_and(|(c, _)| *c != connection_id) {
+                // The same computer trying again replaces its own earlier try.
+                let who = if device_id.is_empty() { hello.name.clone() } else { device_id.clone() };
+                if p.as_ref().is_some_and(|(c, d)| *c != connection_id && *d != who) {
                     return Err(reject(stream, "another computer is pairing right now; try again in a moment"));
                 }
-                *p = Some((connection_id, hello.name.clone()));
+                *p = Some((connection_id, who));
             }
             let n = u32::from_le_bytes(random_bytes::<4>()) % 1_000_000;
             let code = format!("{n:06}");
@@ -619,6 +702,9 @@ fn stream_session(shared: &Arc<Shared>, authed: Authed, writer: (TcpStream, Stre
         audio_seq: AtomicU32::new(0),
         recent_audio: Mutex::new(VecDeque::new()),
         ended: AtomicBool::new(false),
+        mouse: AtomicBool::new(true),
+        keyboard: AtomicBool::new(true),
+        controller: AtomicBool::new(true),
         recent: Mutex::new(HashMap::new()),
         frames: tx,
         counters: Counters { sent: AtomicU64::new(0), sent_bytes: AtomicU64::new(0), encoded: AtomicU64::new(0), nacks: AtomicU64::new(0), resent: AtomicU64::new(0) },
@@ -672,12 +758,13 @@ fn stream_session(shared: &Arc<Shared>, authed: Authed, writer: (TcpStream, Stre
                 logi!("host: {} asked for a keyframe ({reason})", s.name);
                 s.key_requested.store(true, Relaxed);
             }
-            Msg::Key(k) => shared.input.lock().unwrap().key(&k.v, s.windows_client),
-            Msg::MouseMove(m) => shared.input.lock().unwrap().mouse_move(&m.v),
-            Msg::MouseButton(b) => shared.input.lock().unwrap().mouse_button(&b.v),
-            Msg::Scroll(sc) => shared.input.lock().unwrap().scroll(&sc.v),
+            // Input only while the owner allows it for this viewer.
+            Msg::Key(k) if s.keyboard.load(Relaxed) => shared.input.lock().unwrap().key(&k.v, s.windows_client),
+            Msg::CapsLock(on) if s.keyboard.load(Relaxed) => shared.input.lock().unwrap().set_caps_lock(on.v),
+            Msg::MouseMove(m) if s.mouse.load(Relaxed) => shared.input.lock().unwrap().mouse_move(&m.v),
+            Msg::MouseButton(b) if s.mouse.load(Relaxed) => shared.input.lock().unwrap().mouse_button(&b.v),
+            Msg::Scroll(sc) if s.mouse.load(Relaxed) => shared.input.lock().unwrap().scroll(&sc.v),
             Msg::ReleaseAll {} => shared.input.lock().unwrap().release_all(),
-            Msg::CapsLock(on) => shared.input.lock().unwrap().set_caps_lock(on.v),
             Msg::SetCursorInVideo(on) => {
                 let _ = shared.video.send(VideoCommand::CursorInVideo(on.v));
             }

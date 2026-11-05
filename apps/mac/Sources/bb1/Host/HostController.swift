@@ -80,6 +80,13 @@ final class HostSession {
     var warnedLowDisk = false
     /// The client wants the pointer drawn into the picture (it doesn't draw its own).
     var cursorInVideo = true
+    /// What this viewer may control, switched by the owner while it's connected (host queue).
+    /// Everything is on for each new session; nothing is remembered between sessions.
+    var allowsMouse = true
+    var allowsKeyboard = true
+    /// No controller (gamepad) messages exist yet. The switch is already here and in the UI so
+    /// they can be checked against it in `handle` when they arrive.
+    var allowsController = true
     /// Counters at the last stats line (host queue).
     var statsBaseline = (sent: UInt64(0), bytes: UInt64(0), nacks: UInt64(0), resent: UInt64(0))
 
@@ -284,8 +291,40 @@ final class HostController {
 
     // MARK: Status for the menu
 
+    /// What a viewer can be allowed to use.
+    enum Access: String, CaseIterable {
+        case mouse, keyboard, controller
+        var title: String { rawValue.capitalized }
+        var symbol: String {
+            switch self {
+            case .mouse: return "computermouse"
+            case .keyboard: return "keyboard"
+            case .controller: return "gamecontroller"
+            }
+        }
+    }
+
+    /// A connected computer, for the dashboard and the menu.
+    struct Viewer {
+        var id: UInt32
+        var name: String
+        var connectedAt: Date
+        var mouse: Bool
+        var keyboard: Bool
+        var controller: Bool
+
+        func allows(_ access: Access) -> Bool {
+            switch access {
+            case .mouse: return mouse
+            case .keyboard: return keyboard
+            case .controller: return controller
+            }
+        }
+    }
+
     struct Status {
         var clientName: String?
+        var viewers: [Viewer] = []
         var stream: StreamInfo?
         var listening: Bool
         var listenerError: String?
@@ -297,7 +336,9 @@ final class HostController {
         queue.sync {
             let c = pipeline.counters.get
             let names = sessions.isEmpty ? nil : ListFormatter.localizedString(byJoining: sessions.map(\.name))
-            return Status(clientName: names, stream: pipeline.info, listening: tcpListener != nil,
+            let viewers = sessions.map { Viewer(id: $0.id, name: $0.name, connectedAt: $0.connectedAt, mouse: $0.allowsMouse,
+                                                keyboard: $0.allowsKeyboard, controller: $0.allowsController) }
+            return Status(clientName: names, viewers: viewers, stream: pipeline.info, listening: tcpListener != nil,
                           listenerError: listenerError, lastError: c.lastError, recoveries: c.recoveries)
         }
     }
@@ -312,6 +353,7 @@ final class HostController {
         if !options.pipeline.synthetic && !HostController.hasScreenRecording { Log.info("host: Screen Recording permission missing, asking") }
         if !HostController.hasAccessibility { Log.info("host: Accessibility permission missing (needed for mouse/keyboard), asking") }
         Permissions.askForMissing(screen: !options.pipeline.synthetic, accessibility: true)
+        setMutedApps(AppSettings.load().mutedApps)
 
         // One encoder for everyone; each client gets its own copy (own frame numbers, resends and pacing).
         pipeline.onEncodedFrame = { [weak self] frame in self?.live.get.forEach { $0.send(frame) } }
@@ -796,6 +838,37 @@ final class HostController {
         }
     }
 
+    /// The owner disconnecting one viewer (dashboard or menu). The bye stops it reconnecting by itself.
+    func disconnect(viewer id: UInt32) {
+        queue.async {
+            guard let s = self.sessions.first(where: { $0.id == id }) else { return }
+            self.endSession(s, "disconnected by the host", bye: "disconnected by the host")
+        }
+    }
+
+    /// Turn one viewer's mouse, keyboard or controller on or off while it's connected. It's told either way.
+    func setAccess(_ access: Access, _ on: Bool, viewer id: UInt32) {
+        queue.async {
+            guard let s = self.sessions.first(where: { $0.id == id }) else { return }
+            switch access {
+            case .mouse: guard s.allowsMouse != on else { return }; s.allowsMouse = on
+            case .keyboard: guard s.allowsKeyboard != on else { return }; s.allowsKeyboard = on
+            case .controller: guard s.allowsController != on else { return }; s.allowsController = on
+            }
+            Log.info("host: \(access.rawValue) \(on ? "on" : "off") for \(s.name) (session \(s.id))")
+            // Buttons or keys it was holding stay down otherwise (all of them: the injector doesn't know whose they are).
+            if !on { self.injector.releaseAll() }
+            let what = access.rawValue
+            s.control.send(.notice(on ? "The host turned your \(what) back on." : "The host turned off your \(what)."))
+            self.notifyChange()
+        }
+    }
+
+    /// Apps whose sound isn't shared (Settings). Their windows stay in the picture.
+    func setMutedApps(_ ids: [String]) {
+        pipeline.setMutedApps(Set(ids))
+    }
+
     private func sendStreamConfig(_ info: StreamInfo, to s: HostSession) {
         let config = StreamConfig(width: info.width, height: info.height, codec: info.codec, fps: info.fps,
                                   bitrateMbps: info.bitrateMbps, lowLatencyEncoder: info.lowLatency,
@@ -815,22 +888,24 @@ final class HostController {
                                          encodeAvgUs: UInt64(c.encodeAvgUs), hostRecoveries: c.recoveryTotal)))
         case .requestKeyframe(let reason):
             pipeline.requestKeyframe("client: \(reason)")
-        case .key(let k):
+        // Input from a viewer whose mouse or keyboard the owner turned off falls through to `default` (ignored).
+        // Controller messages, when they exist, go here too, checked against `s.allowsController`.
+        case .key(let k) where s.allowsKeyboard:
             if k.down { input.keys += 1; noteInput() }
             injector.key(k)
-        case .mouseMove(let m):
+        case .mouseMove(let m) where s.allowsMouse:
             input.moves += 1
             // Only a real cursor move should produce a new frame; without Accessibility nothing moves.
             if injector.move(m) && HostController.hasAccessibility { lastPointerUs = Clock.nowUs() }
-        case .mouseButton(let b):
+        case .mouseButton(let b) where s.allowsMouse:
             if b.down { input.clicks += 1; noteInput() }
             injector.button(b)
-        case .scroll(let sc):
+        case .scroll(let sc) where s.allowsMouse:
             input.scrolls += 1
             injector.scroll(sc)
         case .releaseAll:
             injector.releaseAll()
-        case .capsLock(let on):
+        case .capsLock(let on) where s.allowsKeyboard:
             injector.setCapsLock(on)
         case .updateHost(let build):
             updateRequested(build, by: s.control)

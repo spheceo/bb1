@@ -54,6 +54,14 @@ pub fn spawn(hwnd: HWND) -> Sender<VideoCmd> {
                 Ok(r) => r,
                 Err(e) => {
                     logi!("video: Direct3D 11 didn't start: {e}");
+                    // A stream that ended at once (sign-in refused) closes its window first; that's
+                    // what failed then, not Direct3D, so don't alarm anyone.
+                    let still_open = unsafe {
+                        windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(hwnd).as_bool()
+                    };
+                    if !still_open {
+                        return;
+                    }
                     crate::win::app::post(crate::win::app::UiEvent::Notice(format!("bb1 couldn't start Direct3D 11 on this PC, so it can't show the picture ({e}).")));
                     return;
                 }

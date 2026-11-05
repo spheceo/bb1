@@ -10,6 +10,8 @@ struct PipelineSettings {
     var fps = 60
     var synthetic = false
     var showsCursor = true
+    /// Bundle ids of apps whose sound isn't shared (from Settings).
+    var mutedApps: Set<String> = []
 }
 
 struct StreamInfo {
@@ -145,6 +147,13 @@ final class StreamPipeline {
         }
     }
 
+    func setMutedApps(_ ids: Set<String>) {
+        queue.async {
+            self.settings.mutedApps = ids
+            self.source?.setMutedApps(ids)
+        }
+    }
+
     func restartAll(_ reason: String) {
         queue.async {
             guard self.running else { return }
@@ -237,7 +246,7 @@ final class StreamPipeline {
         let gen = generation
         let source: FrameSource = settings.synthetic
             ? SyntheticSource(queue: queue, fps: settings.fps)
-            : ScreenSource(queue: queue, fps: settings.fps, showsCursor: settings.showsCursor)
+            : ScreenSource(queue: queue, fps: settings.fps, showsCursor: settings.showsCursor, mutedApps: settings.mutedApps)
         self.source = source
         source.onAudio = { [weak self] sample in
             guard let self, gen == self.generation else { return }

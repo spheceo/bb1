@@ -2,7 +2,7 @@
 //! Your Macs; its menu shares this PC (host/server.rs), says who's watching, shows a pairing code,
 //! and quits bb1. Closing Your Macs leaves bb1 running here.
 
-use crate::core::host::HostEvents;
+use crate::core::host::{Access, HostEvents, Viewer};
 use crate::host::server::Sharing;
 use crate::logi;
 use crate::win::app;
@@ -45,6 +45,58 @@ fn sharing() -> bool {
     SHARING.lock().unwrap().is_some()
 }
 
+// For the window (Your Macs' sharing panel and Settings).
+
+pub fn is_sharing() -> bool {
+    sharing()
+}
+
+/// Why sharing didn't start, if it didn't.
+pub fn problem() -> Option<String> {
+    view(|v| v.problem.clone())
+}
+
+pub fn pairing() -> Option<(String, String)> {
+    view(|v| v.pairing.clone())
+}
+
+pub fn viewers() -> Vec<Viewer> {
+    SHARING.lock().unwrap().as_ref().map(|s| s.host().viewers()).unwrap_or_default()
+}
+
+pub fn set_access(id: u32, what: Access, on: bool) {
+    if let Some(s) = SHARING.lock().unwrap().as_ref() {
+        s.host().set_access(id, what, on);
+    }
+}
+
+pub fn disconnect(id: u32) {
+    if let Some(s) = SHARING.lock().unwrap().as_ref() {
+        s.host().disconnect(id);
+    }
+}
+
+pub fn cancel_pairing() {
+    if let Some(s) = SHARING.lock().unwrap().as_ref() {
+        s.host().cancel_pairing();
+    }
+    view(|v| v.pairing = None);
+    update_tip();
+}
+
+/// Turn sharing on or off (remembered), from the window or the menu.
+pub fn share(on: bool) {
+    set_sharing(on, true);
+    app::post(app::UiEvent::HostsChanged);
+}
+
+/// The muted apps or who-can-connect settings changed: apply them to the running host.
+pub fn settings_changed() {
+    if let Some(s) = SHARING.lock().unwrap().as_ref() {
+        s.apply_settings(&app::settings());
+    }
+}
+
 /// From any thread: refresh the tooltip (on the UI thread).
 fn changed() {
     let h = HWND_TRAY.load(Relaxed);
@@ -61,18 +113,21 @@ impl HostEvents for Events {
     fn pairing_code(&self, device: &str, code: &str) {
         view(|v| v.pairing = Some((device.to_string(), code.to_string())));
         changed();
+        app::post(app::UiEvent::ShowHome);
         notify(&format!("{device} wants to connect"), &format!("Type this code on it: {}", spaced(code)));
     }
     fn pairing_finished(&self, _paired: bool) {
         view(|v| v.pairing = None);
         changed();
+        app::post(app::UiEvent::HostsChanged);
     }
     fn viewers_changed(&self, names: &[String]) {
         let before = view(|v| std::mem::replace(&mut v.viewers, names.to_vec()));
         for joined in names.iter().filter(|n| !before.contains(n)) {
-            notify(&format!("{joined} is watching this PC"), "Right-click bb1 by the clock to disconnect.");
+            notify(&format!("{joined} is watching this PC"), "Open bb1 to choose what it can use, or disconnect it.");
         }
         changed();
+        app::post(app::UiEvent::HostsChanged);
     }
 }
 
@@ -122,7 +177,7 @@ fn set_sharing(on: bool, remember: bool) {
         return;
     }
     if on {
-        match Sharing::start(Arc::new(Events)) {
+        match Sharing::start(Arc::new(Events), &app::settings()) {
             Ok(s) => {
                 *SHARING.lock().unwrap() = Some(s);
                 view(|v| v.problem = None);
@@ -217,7 +272,7 @@ pub fn notify(title: &str, text: &str) {
     unsafe {
         let mut d = icon_data(HWND(h as _));
         d.uFlags = NIF_INFO;
-        d.dwInfoFlags = NIIF_INFO | NIIF_RESPECT_QUIET_TIME;
+        d.dwInfoFlags = NIIF_INFO;
         copy_into(&mut d.szInfoTitle, title);
         copy_into(&mut d.szInfo, text);
         let _ = Shell_NotifyIconW(NIM_MODIFY, &d);
@@ -261,19 +316,13 @@ fn show_menu(hwnd: HWND) {
         let _ = DestroyMenu(menu);
         match choice.0 as usize {
             CMD_OPEN => crate::win::connect::show(""),
-            CMD_SHARE => set_sharing(!on, true),
+            CMD_SHARE => share(!on),
             CMD_DISCONNECT => {
                 if let Some(s) = SHARING.lock().unwrap().as_ref() {
                     s.host().disconnect_all("disconnected from the PC");
                 }
             }
-            CMD_CANCEL_PAIRING => {
-                if let Some(s) = SHARING.lock().unwrap().as_ref() {
-                    s.host().cancel_pairing();
-                }
-                view(|v| v.pairing = None);
-                update_tip();
-            }
+            CMD_CANCEL_PAIRING => cancel_pairing(),
             CMD_QUIT => app::quit(),
             _ => {}
         }

@@ -164,11 +164,18 @@ pub struct Settings {
     pub sharing: bool,
     /// Told once that closing the window keeps bb1 running by the clock.
     pub told_about_tray: bool,
+    /// Sharing: apps whose sound isn't shared ("discord", "chrome", "helium"; see win/apps.rs).
+    pub muted_apps: Vec<String>,
+    /// Sharing: computers on this PC's Tailscale account connect without asking.
+    pub allow_tailscale: bool,
+    /// Sharing: new computers can pair with a 6-digit code.
+    pub allow_pairing: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { modifier_layout: "standard".into(), sound: true, clipboard: true, last_address: None, wheel_lines: 3.0, nightly: true, sharing: false, told_about_tray: false }
+        Settings { modifier_layout: "standard".into(), sound: true, clipboard: true, last_address: None, wheel_lines: 3.0, nightly: true, sharing: false, told_about_tray: false,
+                   muted_apps: vec!["discord".into()], allow_tailscale: true, allow_pairing: true }
     }
 }
 

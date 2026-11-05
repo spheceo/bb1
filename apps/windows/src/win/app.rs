@@ -37,6 +37,8 @@ pub enum UiEvent {
     Config(StreamConfig),
     Paired(String),
     HostsChanged,
+    /// A computer wants to pair: bring the window forward (it shows the code).
+    ShowHome,
 }
 
 static QUEUE: Mutex<VecDeque<UiEvent>> = Mutex::new(VecDeque::new());
@@ -293,6 +295,7 @@ pub fn drain_events() {
             UiEvent::Config(c) => stream::config(&c),
             UiEvent::Paired(name) => connect::set_status(&format!("Paired with {name}.")),
             UiEvent::HostsChanged => connect::refresh(),
+            UiEvent::ShowHome => connect::bring_forward(),
         }
     }
 }

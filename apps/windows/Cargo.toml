@@ -22,6 +22,8 @@ socket2 = { version = "0.6.5", features = ["all"] }
 x25519-dalek = { version = "3.0.0", features = ["static_secrets"] }
 
 [target."cfg(windows)".dependencies]
+# For #[implement] (COM objects Windows calls back: the sound capture's activation handler).
+windows-core = "0.62.2"
 windows = { version = "0.62.2", features = [
   "Win32_Foundation",
   "Win32_Graphics_Imaging",
@@ -54,6 +56,8 @@ windows = { version = "0.62.2", features = [
   "Win32_System_SystemServices",
   "Win32_Media",
   "Win32_System_Performance",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_Registry",
 ] }
 windows-numerics = "0.3.1"
 

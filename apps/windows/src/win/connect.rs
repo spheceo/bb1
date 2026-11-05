@@ -8,6 +8,7 @@ use crate::core::store::KnownHost;
 use crate::core::updater::{Pill, Updater};
 use crate::win::app::{self, UiEvent};
 use crate::win::gfx::{self, Color, Font, Gfx, contains, line_box, rect, style};
+use crate::win::panels::{self, Act, Acts};
 use crate::win::util::{get_text, scale, ui_font};
 use crossbeam_channel::Sender;
 use std::cell::RefCell;
@@ -32,6 +33,8 @@ enum Hover {
     None,
     Plus,
     Pill,
+    /// Something in `acts` (the sharing panel, Settings, the gear).
+    Act(usize),
     Tile(usize),
 }
 
@@ -39,6 +42,12 @@ struct TileHit {
     rect: D2D_RECT_F,
     entry: Entry,
     can_act: bool,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Page {
+    Macs,
+    Settings,
 }
 
 struct Home {
@@ -54,6 +63,11 @@ struct Home {
     done_timer: bool,
     hover: Hover,
     scroll: f32,
+    page: Page,
+    /// Clickable things drawn this time, with what they do (later ones are on top).
+    acts: Acts,
+    /// The muted-apps list in Settings is open.
+    dropdown: bool,
     message: String,
     prompt: Option<Prompt>,
 }
@@ -137,6 +151,9 @@ pub fn create() -> HWND {
                 done_timer: false,
                 hover: Hover::None,
                 scroll: 0.0,
+                page: Page::Macs,
+                acts: Vec::new(),
+                dropdown: false,
                 message: String::new(),
                 prompt: None,
             })
@@ -176,6 +193,25 @@ pub fn show(message: &str) {
     }
     unsafe {
         let _ = ShowWindow(hwnd, SW_SHOW);
+        let _ = SetForegroundWindow(hwnd);
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+}
+
+/// Show the window on top of whatever's in front (a pairing code must be seen). Windows only lets a
+/// background app take the foreground in some cases, so it's also made topmost for a moment.
+pub fn bring_forward() {
+    let Some((hwnd, dir)) = with(|h| {
+        h.page = Page::Macs;
+        h.scroll = 0.0;
+        (h.hwnd, h.directory.clone())
+    }) else { return };
+    dir.set_active(true);
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_SHOW);
+        let _ = ShowWindow(hwnd, SW_RESTORE);
+        let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+        let _ = SetWindowPos(hwnd, Some(HWND_NOTOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
         let _ = SetForegroundWindow(hwnd);
         let _ = InvalidateRect(Some(hwnd), None, false);
     }
@@ -225,9 +261,29 @@ fn paint(h: &mut Home) {
     g.clear(style::background());
 
     // "Your Macs" and its +, like the Mac's header.
-    let title_y = 26.0;
-    g.text("Your Macs", Font::Title, rect(MARGIN, title_y, 400.0, 44.0), Color::white(1.0));
-    let title_w = g.measure("Your Macs", Font::Title);
+    // What the pointer is over, from the last paint's list (hover indexes into it).
+    let hover_act = match h.hover {
+        Hover::Act(i) => h.acts.get(i).map(|(_, a)| a.clone()),
+        _ => None,
+    };
+    h.acts.clear();
+    if h.page == Page::Settings {
+        paint_settings(g, &mut h.acts, &mut h.scroll, h.dropdown, width, height, hover_act.as_ref());
+        return;
+    }
+    let top = 26.0;
+    // The gear (Settings), top right; the update pill sits to its left.
+    let gear = rect(width - MARGIN - 34.0, top + 6.0, 34.0, 34.0);
+    draw_gear(g, gear, hover_act.as_ref() == Some(&Act::Gear));
+    h.acts.push((gear, Act::Gear));
+    // While sharing, who's watching comes first; Your Macs moves down.
+    let mut title_y = top;
+    if crate::win::tray::is_sharing() {
+        let used = panels::sharing_panel(g, MARGIN, top, (width - 2.0 * MARGIN - 50.0).max(200.0), &mut h.acts, hover_act.as_ref());
+        title_y = top + used + 30.0;
+    }
+    g.text("Your computers", Font::Title, rect(MARGIN, title_y, 500.0, 44.0), Color::white(1.0));
+    let title_w = g.measure("Your computers", Font::Title);
     h.plus = rect(MARGIN + title_w + 8.0, title_y + 6.0, 30.0, 34.0);
     let plus_alpha = if h.hover == Hover::Plus { 0.75 } else { 0.4 };
     let (px, py) = ((h.plus.left + h.plus.right) / 2.0, (h.plus.top + h.plus.bottom) / 2.0 + 2.0);
@@ -249,9 +305,9 @@ fn paint(h: &mut Home) {
     if kind == 0 {
         h.pill = rect(0.0, 0.0, 0.0, 0.0);
     } else {
-        let (ph, cy) = (30.0, title_y + 23.0);
+        let (ph, cy) = (30.0, top + 23.0);
         let pw = g.measure(&label, Font::Button) + 28.0;
-        let r = rect(width - MARGIN - pw, cy - ph / 2.0, pw, ph);
+        let r = rect(width - MARGIN - 34.0 - 12.0 - pw, cy - ph / 2.0, pw, ph);
         h.pill = r;
         let radius = ph / 2.0;
         match &pill {
@@ -301,7 +357,7 @@ fn paint(h: &mut Home) {
         // Nothing yet: what to do next.
         let cy = grid.top + (grid.bottom - grid.top) / 2.0 - 40.0;
         g.mark(rect(width / 2.0 - 32.0, cy - 60.0, 64.0, 51.0), 0.25, style::background());
-        g.text_centered("No Macs yet", Font::Heading, rect(0.0, cy + 6.0, width, 24.0), style::label());
+        g.text_centered("No computers yet", Font::Heading, rect(0.0, cy + 6.0, width, 24.0), style::label());
         let (one, two) = if h.directory.tailscale_running() {
             ("Turn on Share This Mac in bb1 on a Mac signed in to your Tailscale,", "or add one by its address with +.")
         } else {
@@ -334,6 +390,46 @@ fn paint(h: &mut Home) {
         g.text(&note, Font::Small, line_box(MARGIN, height - 28.0, width - 2.0 * MARGIN, Font::Small), Color::white(0.6));
     }
     g.end();
+}
+
+fn paint_settings(g: &mut Gfx, acts: &mut Acts, scroll: &mut f32, dropdown: bool, width: f32, height: f32, hover: Option<&Act>) {
+    let top = 26.0;
+    // "‹ Settings": the whole heading goes back to Your Macs.
+    let title_w = g.measure("Settings", Font::Title);
+    let back = rect(MARGIN - 8.0, top, title_w + 44.0, 44.0);
+    let back_hover = hover == Some(&Act::Back);
+    if back_hover {
+        g.fill_round(back, 10.0, Color::white(0.06));
+    }
+    let (cx, cy) = (MARGIN + 6.0, top + 24.0);
+    g.line(cx + 5.0, cy - 9.0, cx - 3.0, cy, Color::white(0.8), 2.5);
+    g.line(cx - 3.0, cy, cx + 5.0, cy + 9.0, Color::white(0.8), 2.5);
+    g.text("Settings", Font::Title, rect(MARGIN + 24.0, top, 400.0, 44.0), Color::white(1.0));
+    acts.push((back, Act::Back));
+    let content_top = top + 44.0 + 24.0;
+    let w = (width - 2.0 * MARGIN).clamp(300.0, 760.0);
+    g.push_rect_clip(rect(0.0, content_top - 6.0, width, (height - content_top + 6.0).max(1.0)));
+    let used = panels::settings_page(g, MARGIN, content_top - *scroll, w, acts, hover, dropdown);
+    g.pop_rect_clip();
+    *scroll = scroll.clamp(0.0, (used - (height - content_top) + 24.0).max(0.0));
+    // Scrolled out of sight: not clickable.
+    acts.retain(|(r, a)| *a == Act::Back || r.bottom > content_top);
+    g.end();
+}
+
+/// A small gear: a ring with teeth.
+fn draw_gear(g: &mut Gfx, r: D2D_RECT_F, hovering: bool) {
+    let (cx, cy) = ((r.left + r.right) / 2.0, (r.top + r.bottom) / 2.0);
+    if hovering {
+        g.fill_circle(cx, cy, 17.0, Color::white(0.08));
+    }
+    let c = Color::white(if hovering { 0.85 } else { 0.55 });
+    for i in 0..8 {
+        let a = i as f32 * std::f32::consts::PI / 4.0;
+        g.line(cx + a.cos() * 6.0, cy + a.sin() * 6.0, cx + a.cos() * 9.5, cy + a.sin() * 9.5, c, 3.0);
+    }
+    g.fill_circle(cx, cy, 6.5, c);
+    g.fill_circle(cx, cy, 3.0, style::background());
 }
 
 fn draw_tile(g: &mut Gfx, r: D2D_RECT_F, m: &Model, preview: Option<&directory::Preview>, hovering: bool) {
@@ -376,6 +472,13 @@ fn draw_tile(g: &mut Gfx, r: D2D_RECT_F, m: &Model, preview: Option<&directory::
 }
 
 fn hit(h: &Home, x: f32, y: f32) -> Hover {
+    // Later ones are drawn on top (the open muted-apps list).
+    if let Some(i) = h.acts.iter().rposition(|(r, _)| contains(r, x, y)) {
+        return Hover::Act(i);
+    }
+    if h.page == Page::Settings {
+        return Hover::None;
+    }
     if contains(&h.plus, x, y) {
         return Hover::Plus;
     }
@@ -476,6 +579,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 let hand = with(|h| match h.hover {
                     Hover::Plus => true,
                     Hover::Pill => h.pill_clickable,
+                    Hover::Act(_) => true,
                     Hover::Tile(i) => h.hits.get(i).is_some_and(|t| t.can_act),
                     Hover::None => false,
                 })
@@ -489,6 +593,46 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_LBUTTONUP => {
             let (x, y) = dips(hwnd, lparam);
+            // The sharing panel, Settings and the gear.
+            let clicked = with(|h| match hit(h, x, y) {
+                Hover::Act(i) => Some(h.acts[i].1.clone()),
+                _ => {
+                    // A click anywhere else closes the muted-apps list.
+                    h.dropdown = false;
+                    None
+                }
+            })
+            .flatten();
+            if let Some(act) = clicked {
+                match act {
+                    Act::Gear => {
+                        with(|h| {
+                            h.page = Page::Settings;
+                            h.scroll = 0.0;
+                            h.dropdown = false;
+                        });
+                    }
+                    Act::Back => {
+                        with(|h| {
+                            h.page = Page::Macs;
+                            h.scroll = 0.0;
+                            h.dropdown = false;
+                        });
+                    }
+                    Act::Dropdown => {
+                        with(|h| h.dropdown = !h.dropdown);
+                    }
+                    other => {
+                        let keep_open = panels::perform(&other);
+                        if !keep_open {
+                            with(|h| h.dropdown = false);
+                        }
+                    }
+                }
+                invalidate();
+                return LRESULT(0);
+            }
+            invalidate();
             if with(|h| hit(h, x, y) == Hover::Pill && h.pill_clickable).unwrap_or(false) {
                 start_update();
                 return LRESULT(0);
@@ -496,7 +640,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let target = with(|h| match hit(h, x, y) {
                 Hover::Plus => Some(None),
                 Hover::Tile(i) => h.hits.get(i).filter(|t| t.can_act).map(|t| Some(t.entry.clone())),
-                Hover::None | Hover::Pill => None,
+                Hover::None | Hover::Pill | Hover::Act(_) => None,
             })
             .flatten();
             match target {

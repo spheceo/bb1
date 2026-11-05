@@ -112,19 +112,22 @@ impl InputBackend for WindowsInput {
 /// This PC being shared. Stop it with `stop`.
 pub struct Sharing {
     host: Host,
-    _audio: Option<Loopback>,
+    audio: Option<Loopback>,
 }
+
 
 impl Sharing {
     /// Start sharing: checks for an NVIDIA encoder, opens the screen, listens for viewers.
-    pub fn start(events: Arc<dyn HostEvents>) -> Result<Sharing, String> {
+    pub fn start(events: Arc<dyn HostEvents>, settings: &store::Settings) -> Result<Sharing, String> {
         let name = store::device_name();
         if !Encoder::is_available() {
             return Err("this PC needs an NVIDIA graphics card with an up-to-date driver to share its screen".into());
         }
         let capture = Capture::new(0).map_err(|e| format!("couldn't capture the screen: {e}"))?;
         let video = NvidiaVideo { capture, encoders: HashMap::new(), latest: None };
-        let cfg = HostConfig::new(&name, &store::device_id());
+        let mut cfg = HostConfig::new(&name, &store::device_id());
+        cfg.allow_tailscale = settings.allow_tailscale;
+        cfg.allow_pairing = settings.allow_pairing;
         let host = Host::start(cfg, Box::new(video), Box::new(WindowsInput(Injector::new())), events)?;
         unsafe {
             // 1 ms timer resolution: packet pacing sleeps for fractions of a frame.
@@ -139,7 +142,17 @@ impl Sharing {
             }
         };
         logi!("host: sharing {name}");
-        Ok(Sharing { host, _audio: audio })
+        let sharing = Sharing { host, audio };
+        sharing.apply_settings(settings);
+        Ok(sharing)
+    }
+
+    /// Who can connect, and which apps' sound is left out.
+    pub fn apply_settings(&self, settings: &store::Settings) {
+        self.host.set_policy(settings.allow_tailscale, settings.allow_pairing);
+        if let Some(a) = &self.audio {
+            a.set_excluded(crate::win::apps::exe_names_for(&settings.muted_apps));
+        }
     }
 
     pub fn host(&self) -> &Host {

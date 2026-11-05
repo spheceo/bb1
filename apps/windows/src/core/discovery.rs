@@ -43,9 +43,16 @@ impl Browser {
                         match event {
                             ServiceEvent::ServiceResolved(info) => {
                                 let name = info.get_fullname().trim_end_matches(BONJOUR_TYPE).trim_end_matches('.').to_string();
-                                // Prefer IPv4: it's what the Mac's listener is reachable on for sure.
+                                // This PC's own sharing: not something to connect to.
+                                let raw = unescape(info.get_fullname().trim_end_matches(BONJOUR_TYPE).trim_end_matches('.'));
+                                if raw.eq_ignore_ascii_case(&crate::core::store::device_name()) {
+                                    continue;
+                                }
+                                // The most home-network-like address first (192.168.x, 10.x, 172.16–31.x),
+                                // then Tailscale; never a loopback or link-local one.
                                 let mut addrs: Vec<String> = info.get_addresses().iter().map(|a| a.to_string()).collect();
-                                addrs.sort_by_key(|a| a.contains(':'));
+                                addrs.retain(|a| !a.starts_with("127.") && a != "::1" && !a.starts_with("fe80"));
+                                addrs.sort_by_key(|a| address_rank(a));
                                 if let Some(ip) = addrs.first() {
                                     let address = if ip.contains(':') {
                                         format!("[{ip}]:{}", info.get_port())
@@ -81,6 +88,20 @@ impl Browser {
         let mut v: Vec<LanHost> = self.found.lock().unwrap().values().cloned().collect();
         v.sort_by(|a, b| a.name.cmp(&b.name));
         v
+    }
+}
+
+/// Lower is better for reaching a computer at home.
+fn address_rank(a: &str) -> u8 {
+    let Ok(ip) = a.parse::<std::net::Ipv4Addr>() else { return 8 }; // IPv6 last
+    let o = ip.octets();
+    match o {
+        [192, 168, ..] => 0,
+        [10, ..] => 1,
+        [172, 17, ..] => 6, // WSL / Docker's virtual network, not the home network
+        [172, b, ..] if (16..=31).contains(&b) => 2,
+        [100, b, ..] if (64..=127).contains(&b) => 4, // Tailscale
+        _ => 5,
     }
 }
 

@@ -31,9 +31,11 @@ struct AppSettings: Codable {
     var hosting: Bool?
     /// Update channel: true = Nightly (GitHub pre-releases only), false = Stable (releases only).
     var nightly = true
+    /// Host: bundle ids of apps whose sound isn't shared (see SoundApps). Their windows still are.
+    var mutedApps = SoundApps.mutedByDefault
 
     enum CodingKeys: String, CodingKey {
-        case mode, dockIcon, keepRunning, allowTailscale, allowPairing, hosting
+        case mode, dockIcon, keepRunning, allowTailscale, allowPairing, hosting, mutedApps
         case nightly = "testBuilds" // its name before nightlies, kept so the choice carries over
     }
 
@@ -50,6 +52,7 @@ struct AppSettings: Codable {
         allowPairing = try c.decodeIfPresent(Bool.self, forKey: .allowPairing) ?? true
         hosting = try c.decodeIfPresent(Bool.self, forKey: .hosting)
         nightly = try c.decodeIfPresent(Bool.self, forKey: .nightly) ?? true
+        mutedApps = (try? c.decodeIfPresent([String].self, forKey: .mutedApps)) ?? SoundApps.mutedByDefault
     }
 
     private static var url: URL { BB1.supportDirectory().appendingPathComponent("settings.json") }
@@ -159,6 +162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dashbo
         change(&fresh)
         fresh.save()
         settings = fresh
+        hostRole?.host.setMutedApps(fresh.mutedApps) // does nothing unless the list changed
     }
 
     func connect(_ target: ClientTarget) { clientRole.connect(target) }
@@ -194,7 +198,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dashbo
 
     private func startHost() {
         let role = HostRole(options: hostOptions)
-        role.onChange = { [weak self] in self?.updateIcon(); self?.dashboard.refresh() }
+        role.onChange = { [weak self] in
+            guard let self else { return }
+            self.updateIcon()
+            self.dashboard.refresh()
+            // A viewer joining or leaving shows up in the menu if it's open.
+            if let menu = self.openStatusMenu { self.menuNeedsUpdate(menu) }
+        }
         role.showDashboard = { [weak self] in self?.dashboard.show(.settings) }
         hostRole = role
         role.start()
@@ -288,7 +298,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dashbo
         case .installing(let r), .restarting(let r):
             info("Installing \(r.shortName)…")
         default:
-            if let r = dashboard.pendingRelease { info("Updating your other Macs to \(r.shortName)…") }
+            if let r = dashboard.pendingRelease { info("Updating your other computers to \(r.shortName)…") }
         }
         menu.addItem(.separator())
         // Sharing and connection status only when there's something to say (Open bb1 covers connecting).

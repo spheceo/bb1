@@ -213,6 +213,10 @@ final class ComputersPage: NSView {
     private var entries: [HostDirectory.Entry] = []
     private var tiles: [String: MacTile] = [:]
     private let empty = EmptyState()
+    private let sharing = SharingPanel()
+    /// "Your Macs" sits at the top, or under "Sharing this Mac" while this Mac is shared.
+    private var titleAtTop: NSLayoutConstraint!
+    private var titleUnderSharing: NSLayoutConstraint!
     /// Header items line up with the window buttons; set in `layout()` once those exist.
     private var brandCenter: NSLayoutConstraint!
     private var brandLeading: NSLayoutConstraint!
@@ -242,7 +246,7 @@ final class ComputersPage: NSView {
         corner.detachesHiddenViews = true
         pill.isHidden = true
 
-        let title = NSTextField(labelWithAttributedString: NSAttributedString(string: "Your Macs", attributes: [
+        let title = NSTextField(labelWithAttributedString: NSAttributedString(string: "Your computers", attributes: [
             .font: NSFont.systemFont(ofSize: 30, weight: .bold), .kern: -0.6, .foregroundColor: NSColor.white]))
         let add = NSButton(image: NSImage(systemSymbolName: "plus", accessibilityDescription: "Connect by address")!
             .withSymbolConfiguration(.init(pointSize: 15, weight: .semibold))!, target: self, action: #selector(connectByAddress))
@@ -290,18 +294,25 @@ final class ComputersPage: NSView {
             doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
         ])
 
-        for v in [brand, corner, titleRow, scroll, empty, message] as [NSView] {
+        sharing.onAccess = { [weak self] id, access, on in self?.dashboard?.delegate?.hostRole?.host.setAccess(access, on, viewer: id) }
+        sharing.onDisconnect = { [weak self] id in self?.dashboard?.delegate?.hostRole?.host.disconnect(viewer: id) }
+        sharing.isHidden = true
+        for v in [brand, corner, sharing, titleRow, scroll, empty, message] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
         brandLeading = brand.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 86)
         brandCenter = brand.centerYAnchor.constraint(equalTo: topAnchor, constant: 20)
         cornerCenter = corner.centerYAnchor.constraint(equalTo: topAnchor, constant: 20)
+        titleAtTop = titleRow.topAnchor.constraint(equalTo: topAnchor, constant: 70)
+        titleUnderSharing = titleRow.topAnchor.constraint(equalTo: sharing.bottomAnchor, constant: 34)
         NSLayoutConstraint.activate([
-            brandLeading, brandCenter, cornerCenter,
+            brandLeading, brandCenter, cornerCenter, titleAtTop,
             corner.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20),
+            sharing.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 40),
+            sharing.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -40),
+            sharing.topAnchor.constraint(equalTo: topAnchor, constant: 70),
             titleRow.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 40),
-            titleRow.topAnchor.constraint(equalTo: topAnchor, constant: 70),
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 40),
             scroll.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -40),
             scroll.topAnchor.constraint(equalTo: titleRow.bottomAnchor, constant: 24),
@@ -339,6 +350,7 @@ final class ComputersPage: NSView {
         guard let dashboard else { return }
         entries = dashboard.directory.entries
         avatar.set(name: dashboard.directory.tailscaleName, picture: dashboard.directory.tailscalePicture)
+        reloadSharing()
 
         var views: [NSView] = []
         var previewTargets: [ClientTarget] = []
@@ -363,6 +375,18 @@ final class ComputersPage: NSView {
         reloadPill()
     }
 
+    // MARK: Sharing this Mac
+
+    private func reloadSharing() {
+        let host = dashboard?.delegate?.hostRole?.host
+        if let host { sharing.update(host.status().viewers) }
+        sharing.isHidden = host == nil
+        // Deactivate first, so the two are never on at once.
+        let under = host != nil
+        if under { titleAtTop.isActive = false; titleUnderSharing.isActive = true }
+        else { titleUnderSharing.isActive = false; titleAtTop.isActive = true }
+    }
+
     // MARK: Update pill
 
     private func reloadPill() {
@@ -379,7 +403,7 @@ final class ComputersPage: NSView {
             let names = dashboard.updatingHosts.sorted()
             let progress = dashboard.updateProgress ?? 0
             pill.show(.busy(progress), "Updating \(ComputersPage.list(names)) · \(Int(progress * 100))%",
-                      tooltip: "Your other Macs update first, then this one.")
+                      tooltip: "Your other computers update first, then this one.")
             return
         }
         if let r = updater.latest, r.build > BB1.build {
@@ -644,7 +668,7 @@ final class SettingsPage: NSView {
             stack.bottomAnchor.constraint(equalTo: doc.bottomAnchor, constant: -30),
         ])
         // Back to Your Macs, in the title bar row where the brand sits on the other page.
-        let back = PillButton("Your Macs", kind: .link, target: self, action: #selector(goBack))
+        let back = PillButton("Your computers", kind: .link, target: self, action: #selector(goBack))
         back.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: 11, weight: .bold))
         back.imagePosition = .imageLeading
@@ -702,17 +726,31 @@ final class SettingsPage: NSView {
                            toggle(app.isHosting) { app.setHosting($0) })]
         if app.isHosting {
             if !HostController.hasScreenRecording {
-                sharing.append(row("Screen Recording", "Needed so your other Macs can see this screen",
+                sharing.append(row("Screen Recording", "Needed so your other computers can see this screen",
                                    small("Allow…", .primary, #selector(openScreen))))
             }
             if !HostController.hasAccessibility {
-                sharing.append(row("Accessibility", "Needed so your other Macs can control this one",
+                sharing.append(row("Accessibility", "Needed so your other computers can control this one",
                                    small("Allow…", .primary, #selector(openAccessibility))))
             }
             let addresses = HostRole.addresses().map { "\($0.1)\($0.0.hasPrefix("utun") ? " Tailscale" : "")" }.joined(separator: "   ")
             if !addresses.isEmpty { sharing.append(row("Addresses", addresses, mono: true, nil)) }
         }
-        section("Sharing", "Let your other Macs see and control this one.", sharing)
+        section("Sharing", "Let your other computers see and control this one.", sharing)
+
+        // Sound
+        let installed = SoundApps.installed()
+        let soundRow: NSView
+        if installed.isEmpty {
+            soundRow = row("Don't share sound from", "Discord, Chrome and Helium aren't on this Mac", nil)
+        } else {
+            let picker = MutedAppsPicker(installed: installed, muted: Set(s.mutedApps))
+            picker.onChange = { muted in
+                app.updateSettings { $0.mutedApps = SoundApps.all.map(\.id).filter(muted.contains) }
+            }
+            soundRow = row("Don't share sound from", "Browsers are muted whole: every tab's sound comes from one process.", picker)
+        }
+        section("Sound", "What your other computers hear from this one. The apps' windows are still shared.", [soundRow])
 
         // Who can connect
         let devices = PairedDevice.store.load()
