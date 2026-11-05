@@ -6,3 +6,6 @@ pub mod core;
 
 #[cfg(windows)]
 pub mod win;
+
+#[cfg(windows)]
+pub mod host;

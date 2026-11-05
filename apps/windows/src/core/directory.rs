@@ -54,6 +54,11 @@ struct State {
     answering: HashSet<String>,
     /// Paired Macs that answered at their remembered home-network address (Bonjour may not see them).
     lan_answering: HashSet<String>,
+    /// Tailscale peer IP → its address on the home network, when Tailscale reaches it directly at a
+    /// private address and bb1 answers there (another way to find a Mac Bonjour can't see).
+    lan_via_tailscale: HashMap<String, String>,
+    /// What the last refresh said, so the log only shows changes.
+    last_summary: String,
     peers: Vec<tailscale::Peer>,
     tailscale_running: bool,
     next_version: u64,
@@ -170,10 +175,40 @@ impl Directory {
             })
             .collect();
         let answering: HashSet<String> = handles.into_iter().filter_map(|h| h.join().ok()).filter(|(ok, _)| *ok).map(|(_, ip)| ip).collect();
+        // Tailscale's direct path to a Mac at home is its home-network address: try bb1 there too.
+        let lan_handles2: Vec<_> = candidates
+            .iter()
+            .filter(|p| answering.contains(&p.ip))
+            .filter_map(|p| {
+                let ip = p.direct.as_deref()?.rsplit_once(':')?.0.trim_matches(['[', ']']).to_string();
+                let private = ip.parse::<std::net::Ipv4Addr>().is_ok_and(|a| a.is_private());
+                private.then(|| (p.ip.clone(), format!("{ip}:{}", crate::core::CONTROL_PORT)))
+            })
+            .map(|(ts, lan)| {
+                std::thread::spawn(move || {
+                    let ok = lan.parse::<std::net::SocketAddr>().is_ok_and(|sa| std::net::TcpStream::connect_timeout(&sa, Duration::from_millis(600)).is_ok());
+                    (ok, ts, lan)
+                })
+            })
+            .collect();
+        let lan_via_tailscale: HashMap<String, String> =
+            lan_handles2.into_iter().filter_map(|h| h.join().ok()).filter(|(ok, _, _)| *ok).map(|(_, ts, lan)| (ts, lan)).collect();
         let lan_answering: HashSet<String> = lan_handles.into_iter().filter_map(|h| h.join().ok()).filter(|(ok, _)| *ok).map(|(_, a)| a).collect();
         let mut s = self.state.lock().unwrap();
-        s.answering = answering;
+        s.answering = answering.clone();
         s.lan_answering = lan_answering;
+        let summary = format!(
+            "tailscale {} · Macs on this account: {} · bb1 answering: {} · home addresses via Tailscale: {}",
+            if running { "running" } else { "not running" },
+            candidates.iter().map(|p| format!("{} {}{}", p.name, p.ip, p.direct.as_ref().map(|d| format!(" (direct {d})")).unwrap_or_default())).collect::<Vec<_>>().join(", "),
+            answering.iter().cloned().collect::<Vec<_>>().join(", "),
+            lan_via_tailscale.iter().map(|(t, l)| format!("{t} → {l}")).collect::<Vec<_>>().join(", "),
+        );
+        if summary != s.last_summary {
+            logi!("directory: {summary}");
+            s.last_summary = summary;
+        }
+        s.lan_via_tailscale = lan_via_tailscale;
         s.peers = peers.unwrap_or_default();
         s.tailscale_running = running;
     }
@@ -222,9 +257,16 @@ impl Directory {
             }
             for p in s.peers.iter().filter(|p| s.answering.contains(&p.ip)) {
                 let name = known.iter().find(|k| k.tailscale_ip.as_deref() == Some(p.ip.as_str())).map(|k| k.name.clone()).unwrap_or_else(|| p.name.clone());
+                let lan = s.lan_via_tailscale.get(&p.ip).cloned();
+                if let (Some(lan), Some(k)) = (&lan, known.iter().find(|k| k.name.eq_ignore_ascii_case(&name))) {
+                    KnownHost::note_lan_address(&k.host_id, lan);
+                }
                 let r = row(&mut rows, &name);
                 r.tailscale = Some(p.ip.clone());
                 r.on_my_tailscale = true;
+                if r.lan.is_none() {
+                    r.lan = lan;
+                }
             }
             // Where to connect: a paired Mac goes over the home network when it's there, else Tailscale
             // (the connection falls back between them by itself). An unpaired one signs in with Tailscale
@@ -245,6 +287,13 @@ impl Directory {
             by_name.sort_by(|a, b| (!a.online, a.name.to_lowercase()).cmp(&(!b.online, b.name.to_lowercase())));
             if by_name.iter().map(|e| (&e.name, e.online, &e.address)).ne(s.entries.iter().map(|e| (&e.name, e.online, &e.address))) {
                 changed = true;
+                let list: Vec<String> = by_name
+                    .iter()
+                    .map(|e| format!("{} ({}{}{})", e.name, if e.online { "online" } else { "offline" },
+                                     e.address.as_ref().map(|a| format!(" at {a}")).unwrap_or_default(),
+                                     if e.quiet { ", signs in by itself" } else { ", needs pairing" }))
+                    .collect();
+                logi!("directory: Macs: {}", if list.is_empty() { "none".into() } else { list.join("; ") });
             }
             s.entries = by_name;
 

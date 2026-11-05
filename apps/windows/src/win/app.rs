@@ -141,9 +141,36 @@ pub fn client() -> Option<Client> {
     APP.with(|a| a.borrow().client.clone())
 }
 
+/// Already running (by the clock)? Bring that one's window forward instead of starting another.
+fn hand_over_to_running_copy() -> bool {
+    use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+    use windows::Win32::System::Threading::CreateMutexW;
+    unsafe {
+        // Kept for the life of the process (the handle is never closed).
+        let _ = CreateMutexW(None, false, windows::core::w!("Local\\bb1-windows-app"));
+        if GetLastError() != ERROR_ALREADY_EXISTS {
+            return false;
+        }
+        if let Ok(other) = FindWindowW(windows::core::w!("bb1Home"), None) {
+            let _ = ShowWindow(other, SW_SHOW);
+            let _ = ShowWindow(other, SW_RESTORE);
+            let _ = SetForegroundWindow(other);
+        }
+        true
+    }
+}
+
 pub fn run() {
+    if hand_over_to_running_copy() {
+        return;
+    }
     crate::core::log::setup(store::log_dir(), "client");
-    logi!("bb1 for Windows {} starting on {}", env!("CARGO_PKG_VERSION"), store::device_name());
+    let build = crate::core::updater::BUILD;
+    logi!("bb1 for Windows {} ({}, build {build}) starting on {} from {}", env!("CARGO_PKG_VERSION"),
+          crate::core::updater::build_name(build), store::device_name(),
+          std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default());
+    crate::core::logserve::start(store::log_dir(), format!(
+        "bb1 for Windows (client), {} (build {build}), on {}", crate::core::updater::build_name(build), store::device_name()));
     std::panic::set_hook(Box::new(|info| {
         logi!("CRASH: {info}");
     }));
@@ -156,6 +183,14 @@ pub fn run() {
     }
     let main = connect::create();
     set_event_window(main);
+    // The icon by the clock; `--host` starts sharing (and keeps the window out of the way).
+    let host_arg = std::env::args().any(|a| a == "--host");
+    crate::win::tray::init(host_arg);
+    if host_arg {
+        unsafe {
+            let _ = ShowWindow(main, SW_HIDE);
+        }
+    }
     // Started with an address (bb1.exe 100.80.66.124): connect straight away.
     if let Some(address) = std::env::args().nth(1).filter(|a| !a.starts_with('-')) {
         connect_to(&address, "");
@@ -174,9 +209,24 @@ pub fn run() {
         c.stop(); // says bye, so the Mac lets go of the keys and ends the session at once
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
+    crate::win::tray::shutdown();
     logi!("bb1 for Windows quit");
     // Don't wait for background work (Tailscale check, previews, network listeners) to wind down.
     std::process::exit(0);
+}
+
+/// Quit bb1 (from the icon's menu): leave the message loop; everything else winds down after it.
+pub fn quit() {
+    let main = EVENT_HWND.load(Relaxed);
+    unsafe {
+        if main != 0 {
+            let _ = ShowWindow(HWND(main as _), SW_HIDE);
+        }
+        if let Some(stream) = crate::win::stream::hwnd() {
+            let _ = ShowWindow(stream, SW_HIDE);
+        }
+        PostQuitMessage(0);
+    }
 }
 
 /// Opens a stream window and connects to `address` ("100.80.66.124", "kenobi.local:47800").
@@ -185,7 +235,7 @@ pub fn connect_to(address: &str, label: &str) {
         return;
     }
     let target = Target::new(address, label);
-    logi!("app: connecting to {} at {} (sign-in: {})", target.label, target.address, target.auth.mode());
+    logi!("app: connecting to {} at {} (sign-in: {}; routes: {})", target.label, target.address, target.auth.mode(), target.routes.join(", "));
     update_settings(|s| s.last_address = Some(address.to_string()));
     let video = stream::open(&target.label);
     let settings = settings();

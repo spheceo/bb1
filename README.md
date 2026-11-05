@@ -22,6 +22,7 @@ Built so far: roadmap M1 (video), M2 (input), most of M3 (watchdogs, recovery, f
 | [05-macos-limits](docs/05-macos-limits.md) | Permissions, sleep, lock screen, FileVault |
 | [06-roadmap](docs/06-roadmap.md) | Milestones in build order |
 | [07-building-and-running](docs/07-building-and-running.md) | Tooling (no Xcode), repo layout, how the host runs |
+| [08-gaming-host](docs/08-gaming-host.md) | Windows host for playing games together: why Parsec lagged, and the plan |
 | [open-questions](docs/open-questions.md) | Things we still need to find out |
 | [decisions/](docs/decisions/) | One note per decision, with the reasoning |
 | [ideas/phone-app](docs/ideas/phone-app.md) | iPhone app: glance at your Mac, type a password when an agent needs it |

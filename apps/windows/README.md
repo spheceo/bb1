@@ -17,7 +17,11 @@ In the stream window:
 
 **Updates:** when a newer nightly is on GitHub, Your Macs shows **Update to nightly-N** at the top right. It updates your Macs that are behind, then this PC (Windows asks once for admin), and bb1 opens again as the new build. `"nightly": false` in `%APPDATA%\bb1\settings.json` sticks to releases.
 
-Logs: `%LOCALAPPDATA%\bb1\Logs\client.log`. While connected, every line also goes to the Mac's log (`~/Library/Logs/bb1/host.log`, prefixed `[windows]`). Pairings and settings: `%APPDATA%\bb1`.
+**bb1 by the clock:** bb1's icon in the notification area (maybe under the ^ arrow; drag it onto the taskbar to keep it in sight) opens Your Macs on a click. Right-click it to **share this PC**, see who's watching, disconnect them, or quit. Closing Your Macs leaves bb1 running there.
+
+**Sharing this PC** (needs an NVIDIA graphics card): turn on **Share this PC** in the icon's menu. Macs and PCs connect to it from their Your Macs like to a Mac: by themselves on the same Tailscale account, otherwise with a 6-digit code that pops up as a notification. Each viewer has its own encoder, bitrate and pacing (docs/08-gaming-host.md). `bb1.exe --host` shares straight away, for that run only.
+
+Logs: `%LOCALAPPDATA%\bb1\Logs\client.log` (sharing logs there too), also readable from your other devices on the same Tailscale account: `scripts/bb1-logs.sh pc client.log` (port 47802). While connected, every line also goes to the Mac's log (`~/Library/Logs/bb1/host.log`, prefixed `[windows]`). Pairings and settings: `%APPDATA%\bb1`.
 
 ## How it's built
 
@@ -52,6 +56,8 @@ ffmpeg -v error -i /tmp/s.h264 -f null -   # no output = every frame decoded
 ```
 
 GitHub Actions builds `bb1.exe` and `bb1-setup.exe` on Windows when this folder changes (`.github/workflows/windows.yml`, artifact `bb1-windows-x64`), and for every nightly and release, which then carry `bb1-windows-nightly-<M>-setup.exe` (or `bb1-windows-v<VERSION>-setup.exe`) next to the Mac files.
+
+The host (`src/host`, Windows only) is DXGI Desktop Duplication → NVENC (one encoder per viewer) → the protocol host in `src/core/host.rs`, which builds anywhere: `bb1-testhost --video stream.h264` runs it on a Mac with a recorded stream instead of a GPU, so both clients can be tested against it.
 
 ## Not yet
 

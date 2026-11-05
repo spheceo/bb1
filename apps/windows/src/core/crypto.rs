@@ -163,6 +163,26 @@ pub fn open_audio(datagram: &[u8], key: &[u8; 32]) -> Option<(u32, u64, Vec<u8>)
     Some((seq, capture_us, pcm))
 }
 
+/// Host side: seal 5 ms of PCM as an audio datagram (header authenticated, PCM encrypted).
+pub fn seal_audio(seq: u32, capture_us: u64, pcm: &[u8], key: &[u8; 32]) -> Vec<u8> {
+    let mut d = vec![AUDIO_TYPE, 0];
+    d.extend_from_slice(&seq.to_le_bytes());
+    d.extend_from_slice(&capture_us.to_le_bytes());
+    let n = nonce(*b"AUD\0", seq as u64);
+    let sealed = cipher(key).encrypt(&Nonce::from(n), Payload { msg: pcm, aad: &d }).expect("sealing can't fail");
+    d.extend_from_slice(&sealed);
+    d
+}
+
+/// Host side: is this datagram a genuine UDP hello? Returns its session ID.
+pub fn udp_hello_session(datagram: &[u8]) -> Option<u32> {
+    (datagram.len() == 21 && datagram[0] == 0x02).then(|| u32::from_le_bytes(datagram[1..5].try_into().unwrap()))
+}
+
+pub fn udp_hello_valid(datagram: &[u8], video_key: &[u8; 32]) -> bool {
+    datagram.len() == 21 && hmac(video_key, &[&datagram[..5]])[..16] == datagram[5..21]
+}
+
 /// The client's UDP "here I am": type 0x02, session ID, and the first 16 bytes of an HMAC.
 pub fn udp_hello(session_id: u32, video_key: &[u8; 32]) -> Vec<u8> {
     let mut d = vec![0x02u8];
@@ -232,5 +252,10 @@ pub mod tests {
         assert_eq!(pcm, h(&v, "audioPcm"));
 
         assert_eq!(udp_hello(5, &keys.video), h(&v, "udpHello"));
+        let hello = udp_hello(5, &keys.video);
+        assert_eq!(udp_hello_session(&hello), Some(5));
+        assert!(udp_hello_valid(&hello, &keys.video) && !udp_hello_valid(&hello, &keys.client_to_host));
+        // The host's sealing is what the client opens (and what the Mac host makes).
+        assert_eq!(seal_audio(99, 555, &h(&v, "audioPcm"), &keys.video), h(&v, "audioPacket"));
     }
 }

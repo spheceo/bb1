@@ -118,6 +118,12 @@ Section "-${APP}" SecApp
   SectionIn RO
   !insertmacro CloseRunning
   SetOutPath "$INSTDIR"
+  ; A bb1 that's still closing (or a virus scan reading the file) would make writing bb1.exe fail
+  ; ("Abort, Retry, Ignore"). Windows lets a file in use be renamed, so move it aside first.
+  Delete "$INSTDIR\${APP}.old.exe"
+  IfFileExists "$INSTDIR\${APP}.exe" 0 +3
+    Rename "$INSTDIR\${APP}.exe" "$INSTDIR\${APP}.old.exe"
+    Delete /REBOOTOK "$INSTDIR\${APP}.old.exe"
   File "/oname=${APP}.exe" "${EXE}"
   WriteUninstaller "$INSTDIR\Uninstall ${APP}.exe"
 
@@ -130,6 +136,8 @@ Section "-${APP}" SecApp
 
   SetShellVarContext all
   CreateShortcut "$SMPROGRAMS\${APP}.lnk" "$INSTDIR\${APP}.exe"
+  ; (An early nightly had a separate "bb1 Host" shortcut; sharing is in bb1's menu by the clock now.)
+  Delete "$SMPROGRAMS\${APP} Host.lnk"
 
   WriteRegStr HKLM "${UNINST_KEY}" "DisplayName" "${APP}"
   WriteRegStr HKLM "${UNINST_KEY}" "DisplayVersion" "${VERSION} (build ${BUILD})"
@@ -166,8 +174,10 @@ Section "Uninstall"
 
   SetShellVarContext all
   Delete "$SMPROGRAMS\${APP}.lnk"
+  Delete "$SMPROGRAMS\${APP} Host.lnk"
   Delete "$DESKTOP\${APP}.lnk"
   Delete "$INSTDIR\${APP}.exe"
+  Delete "$INSTDIR\${APP}.old.exe"
   Delete "$INSTDIR\Uninstall ${APP}.exe"
   RMDir "$INSTDIR"
   DeleteRegKey HKLM "${UNINST_KEY}"

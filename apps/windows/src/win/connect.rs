@@ -555,12 +555,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(0)
         }
         WM_CLOSE => unsafe {
-            // Gone from the screen at once; the rest of quitting happens out of sight.
+            // bb1 keeps running by the clock (sharing, updates); Quit is in the icon's menu.
             let _ = ShowWindow(hwnd, SW_HIDE);
-            if let Some(stream) = crate::win::stream::hwnd() {
-                let _ = ShowWindow(stream, SW_HIDE);
+            if let Some(d) = with(|h| h.directory.clone()) {
+                d.set_active(false);
             }
-            PostQuitMessage(0);
+            crate::win::tray::told_still_running();
             LRESULT(0)
         },
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },

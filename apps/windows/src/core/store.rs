@@ -160,11 +160,15 @@ pub struct Settings {
     pub wheel_lines: f64,
     /// Update channel: nightlies (true) or releases only.
     pub nightly: bool,
+    /// Share this PC (start sharing whenever bb1 runs).
+    pub sharing: bool,
+    /// Told once that closing the window keeps bb1 running by the clock.
+    pub told_about_tray: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { modifier_layout: "standard".into(), sound: true, clipboard: true, last_address: None, wheel_lines: 3.0, nightly: true }
+        Settings { modifier_layout: "standard".into(), sound: true, clipboard: true, last_address: None, wheel_lines: 3.0, nightly: true, sharing: false, told_about_tray: false }
     }
 }
 

@@ -1,6 +1,7 @@
 //! Macs sharing their screen on the home network (Bonjour `_bb1._tcp`).
 
 use crate::core::BONJOUR_TYPE;
+use crate::logi;
 use mdns_sd::{ServiceDaemon, ServiceEvent};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -22,9 +23,20 @@ impl Browser {
     /// `changed` is called (on a background thread) whenever the list changes.
     pub fn start(changed: impl Fn() + Send + 'static) -> Browser {
         let found: Arc<Mutex<HashMap<String, LanHost>>> = Arc::default();
-        let daemon = ServiceDaemon::new().ok();
+        let daemon = match ServiceDaemon::new() {
+            Ok(d) => Some(d),
+            Err(e) => {
+                logi!("bonjour: can't look for Macs on the home network ({e})");
+                None
+            }
+        };
         if let Some(d) = daemon.as_ref() {
-            if let Ok(rx) = d.browse(BONJOUR_TYPE) {
+            let rx = d.browse(BONJOUR_TYPE);
+            if let Err(e) = &rx {
+                logi!("bonjour: browsing failed ({e})");
+            }
+            if let Ok(rx) = rx {
+                logi!("bonjour: looking for Macs on the home network");
                 let found = found.clone();
                 std::thread::spawn(move || {
                     while let Ok(event) = rx.recv() {
@@ -41,12 +53,18 @@ impl Browser {
                                         format!("{ip}:{}", info.get_port())
                                     };
                                     let name = unescape(&name);
+                                    let all: Vec<String> = info.get_addresses().iter().map(|a| a.to_string()).collect();
+                                    let fresh = found.lock().unwrap().get(info.get_fullname()).is_none_or(|h| h.address != address);
+                                    if fresh {
+                                        logi!("bonjour: found {name} at {address} (addresses: {})", all.join(", "));
+                                    }
                                     found.lock().unwrap().insert(info.get_fullname().to_string(), LanHost { name, address });
                                     changed();
                                 }
                             }
                             ServiceEvent::ServiceRemoved(_, fullname) => {
-                                if found.lock().unwrap().remove(&fullname).is_some() {
+                                if let Some(h) = found.lock().unwrap().remove(&fullname) {
+                                    logi!("bonjour: {} left the home network", h.name);
                                     changed();
                                 }
                             }

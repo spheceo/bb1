@@ -520,14 +520,14 @@ impl Drop for SideChannel {
     }
 }
 
-fn write_frame(stream: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_frame(stream: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
     let mut frame = Vec::with_capacity(body.len() + 4);
     frame.extend_from_slice(&(body.len() as u32).to_le_bytes());
     frame.extend_from_slice(body);
     stream.write_all(&frame)
 }
 
-fn read_frame(stream: &mut TcpStream) -> Result<Vec<u8>, String> {
+pub(crate) fn read_frame(stream: &mut TcpStream) -> Result<Vec<u8>, String> {
     let mut len = [0u8; 4];
     stream.read_exact(&mut len).map_err(|e| describe_read_error(&e))?;
     let len = u32::from_le_bytes(len) as usize;
@@ -567,7 +567,7 @@ fn handshake_with(stream: &mut TcpStream, target: &Target, purpose: Option<&str>
         device_id: Some(device_id.clone()),
         mode: Some(mode.into()),
         ecdh_pub: Some(eph.public.to_vec()),
-        app_build: None,
+        app_build: Some(crate::core::updater::BUILD),
         purpose: purpose.map(String::from),
         codecs: Some(vec!["h264".into()]),
     };

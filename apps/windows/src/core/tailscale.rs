@@ -94,6 +94,22 @@ pub fn peers() -> Option<Vec<Peer>> {
     Some(out)
 }
 
+/// This machine's Tailscale account ("someone@gmail.com").
+pub fn self_login() -> Option<String> {
+    let data = run(&["status", "--json"])?;
+    let root: serde_json::Value = serde_json::from_slice(&data).ok()?;
+    let id = root.get("Self")?.get("UserID")?.to_string();
+    let login = root.get("User")?.get(&id)?.get("LoginName")?.as_str()?;
+    (!login.is_empty()).then(|| login.to_string())
+}
+
+/// Whose device is at this Tailscale address.
+pub fn whois_login(ip: &str) -> Option<String> {
+    let data = run(&["whois", "--json", ip])?;
+    let root: serde_json::Value = serde_json::from_slice(&data).ok()?;
+    root.get("UserProfile")?.get("LoginName")?.as_str().map(String::from)
+}
+
 /// Is bb1 sharing on this Mac? (Its control port answers.) Blocks up to `timeout`.
 pub fn bb1_answers(ip: &str, timeout: std::time::Duration) -> bool {
     let addr = if ip.contains(':') { format!("[{ip}]:{}", crate::core::CONTROL_PORT) } else { format!("{ip}:{}", crate::core::CONTROL_PORT) };

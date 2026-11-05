@@ -98,6 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dashbo
         let hosting = forcedMode.map { $0 == .host } ?? settings.isHosting
         Log.setup(hosting ? "host" : "client")
         Log.info("app: starting bb1 v\(BB1.version) (build \(BB1.build))\(hosting ? ", sharing this Mac" : "")")
+        LogService.shared.start()
         if Installer.offerMoveIfNeeded() { return }
         Installer.takeOver()
         buildMainMenu()
