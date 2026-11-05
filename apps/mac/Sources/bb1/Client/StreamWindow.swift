@@ -338,6 +338,8 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
     private var lastStats: ClientStats?
     private var notice: String?
     private var config: StreamConfig?
+    /// The host's screens (nil: it didn't say). The Screen menu shows when there's more than one.
+    private var displays: DisplaysMsg?
     private var windowedFrame: NSRect?
     private var wasCapturing = false
     /// ⌘⎋ gave control back to this Mac; it returns when the pointer comes back onto the picture or you click it.
@@ -424,6 +426,7 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
             self.refreshOverlay()
             if self.connected { self.onUpdate?("Connected to \(MacNames.display(target.label))", true, s) }
         }
+        connection.onDisplays = { [weak self] d in self?.displays = d }
         connection.onEnded = { [weak self] reason in
             self?.endReason = reason
             self?.window.close()
@@ -449,6 +452,8 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
             onGiveBack: { [weak self] in self?.releaseInput() })
         keyboard.forwardKeys = { [weak self] in self?.settings.input.keyboard ?? false }
         keyboard.onCapsLock = { connection.send(.capsLock($0)) }
+        keyboard.canStepScreens = { [weak self] in (self?.displays?.displays.count ?? 0) > 1 }
+        keyboard.onScreenStep = { [weak self] step in self?.stepScreen(step) }
         connection.setSound(settings.sound)
 
         for name in [NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification] {
@@ -609,6 +614,34 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
 
     @objc func disconnect() { window.close() }
 
+    /// "LG HDR 4K · 3840×2160 (main)"
+    private static func label(_ d: DisplayInfo) -> String {
+        "\(d.name) · \(d.width)×\(d.height)\(d.primary ? " (main)" : "")"
+    }
+
+    @objc func selectScreen(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String, let d = displays?.displays.first(where: { $0.id == id }) else { return }
+        askForScreen(d)
+    }
+
+    @objc func nextScreen() { stepScreen(1) }
+    @objc func previousScreen() { stepScreen(-1) }
+
+    /// The host's screen `step` away from the one it shares (wrapping around).
+    private func stepScreen(_ step: Int) {
+        guard let d = displays, d.displays.count > 1 else { return }
+        let i = d.displays.firstIndex { $0.id == d.current } ?? 0
+        let n = d.displays.count
+        askForScreen(d.displays[((i + step) % n + n) % n])
+    }
+
+    /// One capture for every viewer: the switch is for everyone watching this host.
+    private func askForScreen(_ d: DisplayInfo) {
+        Log.info("client: asking for the host's screen \(d.id) (\(d.name))")
+        connection.send(.selectDisplay(id: d.id))
+        flash("Screen: \(StreamWindowController.label(d))")
+    }
+
     private func flash(_ text: String, for seconds: Double = 2) {
         notice = text
         refreshOverlay()
@@ -647,6 +680,18 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
             i.representedObject = mode.rawValue
             return i
         }))
+        if let d = displays, d.displays.count > 1 {
+            var screens = d.displays.map { screen in
+                let i = item(StreamWindowController.label(screen), #selector(selectScreen(_:)), on: screen.id == d.current)
+                i.representedObject = screen.id
+                return i
+            }
+            screens.append(.separator())
+            let arrow = { (c: Int) in String(Character(UnicodeScalar(c)!)) }
+            screens.append(item("Next Screen", #selector(nextScreen), key: arrow(NSRightArrowFunctionKey), mods: [.control, .option]))
+            screens.append(item("Previous Screen", #selector(previousScreen), key: arrow(NSLeftArrowFunctionKey), mods: [.control, .option]))
+            items.append(sub("Screen", screens))
+        }
         items.append(.separator())
         items.append(sub("Input", InputMode.allCases.map { mode in
             let i = item(mode.title, #selector(setInput(_:)), on: settings.input == mode)
@@ -673,7 +718,8 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
         if showStats, let s = lastStats {
             lines.append(.stat(s.summary))
             lines.append(.stat("system shortcuts \(keyboard.hasSystemShortcuts ? "go to the host" : "stay here (allow Accessibility)") · input \(settings.input.title.lowercased()) · sound \(settings.sound ? "on" : "muted")"))
-            lines.append(.hint("Off the picture, this Mac has control. ⌘⎋ gives it back · ⌃⌘F full screen · ⌘I stats"))
+            lines.append(.hint("Off the picture, this Mac has control. ⌘⎋ gives it back · ⌃⌘F full screen · ⌘I stats"
+                               + ((displays?.displays.count ?? 0) > 1 ? " · ⌃⌥←/→ host's screens" : "")))
         }
         view.setOverlay(lines)
     }

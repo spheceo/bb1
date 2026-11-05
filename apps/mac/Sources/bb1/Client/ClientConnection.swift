@@ -88,6 +88,8 @@ final class ClientConnection {
     var onNotice: ((String) -> Void)?
     var onStats: ((ClientStats) -> Void)?
     var onEnded: ((String) -> Void)?
+    /// The host's screens and which one it shares (after welcome, and when either changes).
+    var onDisplays: ((DisplaysMsg) -> Void)?
     /// Client queue. Ask the display to flush and start over.
     var onDisplayStall: (() -> Void)?
 
@@ -137,6 +139,8 @@ final class ClientConnection {
     private var gapSinceUs: UInt64 = 0
     private var supportsV2: Bool { (control?.peerVersion ?? 1) >= 2 }
     private let clipboard = ClipboardSync()
+    /// This Mac's game controllers, sent while the stream window is key. Main thread.
+    private lazy var gamepads = Gamepads(connection: self)
     private let clipboardEnabled = ProcessInfo.processInfo.environment["BB1_NO_CLIPBOARD"] == nil
     private let displayTiming = Locked((lastUs: UInt64(0), maxGapUs: UInt64(0)))
     private var sentHistory: [(us: UInt64, sent: UInt64)] = []
@@ -299,6 +303,7 @@ final class ClientConnection {
         sentHistory.removeAll()
         Log.sink = nil
         audio.stop()
+        DispatchQueue.main.async { self.gamepads.stop() }
         clipboard.stop()
         clipboard.onLocalCopy = nil
         history.removeAll()
@@ -373,6 +378,9 @@ final class ClientConnection {
             } else {
                 Log.info("client: this host is an older version: no packet resend or clipboard")
             }
+            if (control?.peerVersion ?? 1) >= 4 {
+                DispatchQueue.main.async { self.gamepads.start() }
+            }
         case .streamConfig(let c):
             let old = config
             config = c
@@ -395,6 +403,11 @@ final class ClientConnection {
             if clipboardEnabled { clipboard.apply(c) }
         case .cursor(let c):
             DispatchQueue.main.async { self.onCursor?(c) }
+        case .rumble(let r):
+            DispatchQueue.main.async { self.gamepads.rumble(r) }
+        case .displays(let d):
+            Log.info("client: host has \(d.displays.count) screen(s), sharing \(d.current)")
+            DispatchQueue.main.async { self.onDisplays?(d) }
         case .paired(let p):
             // Remember this host; from now on we sign in with this secret (no code, no Tailscale needed).
             let known = KnownHost(hostId: p.hostId, name: p.hostName, secret: p.secret,

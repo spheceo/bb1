@@ -26,6 +26,19 @@ jobs:
         run: cargo test --locked
       - name: Build bb1.exe (unsigned)
         run: cargo build --release --locked --bin bb1
+      - name: SDL3.dll for game controllers (SDL's official release, zlib licence; same pin as scripts/installer.sh)
+        shell: pwsh
+        env:
+          SDL_VERSION: 3.2.30
+          SDL_SHA256: 8b9986c87751fc976cf6d606fafb614ec683d8b23bf651cb3027cc9016b25bb4
+        run: |
+          New-Item -ItemType Directory -Force target\sdl3 | Out-Null
+          $zip = "target\sdl3\SDL3-$env:SDL_VERSION-win32-x64.zip"
+          Invoke-WebRequest -Uri "https://github.com/libsdl-org/SDL/releases/download/release-$env:SDL_VERSION/SDL3-$env:SDL_VERSION-win32-x64.zip" -OutFile $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:SDL_SHA256) { throw "SDL3 zip checksum mismatch: $hash" }
+          Expand-Archive -Force $zip target\sdl3
+          Copy-Item target\sdl3\SDL3.dll target\release\SDL3.dll
       - name: Build bb1-setup.exe (installs to Program Files, adds a Defender exclusion)
         shell: bash
         run: |
@@ -34,6 +47,7 @@ jobs:
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           "$nsis/makensis.exe" -V2 -DVERSION="$version" -DBUILD="$(git rev-list --count HEAD)" \
             -DEXE="$(cygpath -w "$PWD/target/release/bb1.exe")" \
+            -DSDL="$(cygpath -w "$PWD/target/release/SDL3.dll")" \
             -DOUT="$(cygpath -w "$PWD/target/release/bb1-setup.exe")" installer/bb1.nsi
       - uses: actions/upload-artifact@v7
         with:
@@ -41,5 +55,6 @@ jobs:
           path: |
             apps/windows/target/release/bb1-setup.exe
             apps/windows/target/release/bb1.exe
+            apps/windows/target/release/SDL3.dll
           retention-days: 14
           if-no-files-found: error

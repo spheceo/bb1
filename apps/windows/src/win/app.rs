@@ -5,7 +5,7 @@
 //! straight to the stream window's video thread.
 
 use crate::core::client::{Client, Events, Stats, Target};
-use crate::core::proto::{ClipboardMsg, CursorMsg, StreamConfig};
+use crate::core::proto::{ClipboardMsg, CursorMsg, RumbleMsg, StreamConfig};
 use crate::core::store::{self, KnownHost, Settings};
 use crate::core::video::FramePayload;
 use crate::logi;
@@ -33,6 +33,7 @@ pub enum UiEvent {
     Clipboard(ClipboardMsg),
     Cursor(CursorMsg),
     Stats(Stats),
+    Displays(crate::core::proto::DisplaysMsg),
     Welcome(String),
     Config(StreamConfig),
     Paired(String),
@@ -114,6 +115,14 @@ impl Events for AppEvents {
     }
     fn stats(&self, stats: &Stats) {
         post(UiEvent::Stats(stats.clone()));
+    }
+    fn displays(&self, d: crate::core::proto::DisplaysMsg) {
+        post(UiEvent::Displays(d));
+    }
+    fn rumble(&self, r: RumbleMsg) {
+        if self.generation == GENERATION.load(Relaxed) {
+            crate::win::gamepad::rumble(r);
+        }
     }
 }
 
@@ -245,6 +254,7 @@ pub fn connect_to(address: &str, label: &str) {
     let events = std::sync::Arc::new(AppEvents { video, generation });
     let client = Client::start(target, events, settings.sound, false);
     stream::attach(client.clone());
+    crate::win::gamepad::start(client.clone(), stream::hwnd());
     APP.with(|a| a.borrow_mut().client = Some(client));
     connect::hide();
 }
@@ -252,6 +262,7 @@ pub fn connect_to(address: &str, label: &str) {
 /// The stream window was closed (or Disconnect chosen): back to the host list right away.
 pub fn disconnect() {
     GENERATION.fetch_add(1, Relaxed); // whatever the old connection still says is stale now
+    crate::win::gamepad::stop();
     if let Some(c) = APP.with(|a| a.borrow_mut().client.take()) {
         c.stop();
     }
@@ -276,6 +287,7 @@ pub fn drain_events() {
                     continue;
                 }
                 logi!("app: session ended: {reason}");
+                crate::win::gamepad::stop();
                 if let Some(c) = APP.with(|a| a.borrow_mut().client.take()) {
                     c.stop();
                 }
@@ -291,6 +303,7 @@ pub fn drain_events() {
             }
             UiEvent::Cursor(c) => stream::set_cursor(&c),
             UiEvent::Stats(s) => stream::stats(&s),
+            UiEvent::Displays(d) => stream::set_displays(d),
             UiEvent::Welcome(host) => stream::welcome(&host),
             UiEvent::Config(c) => stream::config(&c),
             UiEvent::Paired(name) => connect::set_status(&format!("Paired with {name}.")),

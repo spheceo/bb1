@@ -1,7 +1,8 @@
 //! A bb1 host on any computer, for testing the host protocol (src/core/host.rs) without Windows or a
 //! GPU: it "encodes" by replaying a recorded H.264 stream (Annex B, e.g. `bb1-probe --out`), each
 //! viewer from its own position (a forced keyframe starts that viewer over), and logs input instead
-//! of injecting it.
+//! of injecting it. It pretends to have two screens (\\.\DISPLAY1, the main one, and \\.\DISPLAY2
+//! to its right), so switching screens can be tried with `bb1-probe --screen '\\.\DISPLAY2'`.
 //!
 //!   bb1-testhost --video /tmp/s.h264 [--port 47960] [--fps 60] [--drop 5]
 //!
@@ -19,6 +20,15 @@ struct Replay {
     fps: u32,
     next_tick: Instant,
     positions: HashMap<u32, usize>,
+    /// Which pretend screen is shared (an index into `screens()`).
+    screen: usize,
+}
+
+impl Replay {
+    /// (id, name, left): both the size of the recording.
+    fn screens(&self) -> [(&'static str, &'static str, i32); 2] {
+        [(r"\\.\DISPLAY1", "Test screen", 0), (r"\\.\DISPLAY2", "Second test screen", self.size.0 as i32)]
+    }
 }
 
 impl VideoBackend for Replay {
@@ -55,6 +65,24 @@ impl VideoBackend for Replay {
     fn set_bitrate(&mut self, id: u32, kbps: u32) {
         eprintln!("testhost: viewer {id} bitrate → {kbps} kbps");
     }
+    fn displays(&self) -> Vec<DisplayInfo> {
+        self.screens()
+            .iter()
+            .map(|&(id, name, left)| DisplayInfo { id: id.into(), name: name.into(), width: self.size.0 as i64, height: self.size.1 as i64, primary: left == 0 })
+            .collect()
+    }
+    fn current_display(&self) -> String {
+        self.screens()[self.screen].0.into()
+    }
+    fn select_display(&mut self, id: &str) -> Result<(), String> {
+        let i = self.screens().iter().position(|s| s.0 == id).ok_or_else(|| format!("there's no screen {id}"))?;
+        eprintln!("testhost: sharing screen {id}");
+        self.screen = i;
+        Ok(())
+    }
+    fn display_rect(&self) -> Option<(i32, i32, i32, i32)> {
+        Some((self.screens()[self.screen].2, 0, self.size.0 as i32, self.size.1 as i32))
+    }
 }
 
 struct LogInput;
@@ -70,6 +98,9 @@ impl InputBackend for LogInput {
     fn scroll(&mut self, _s: &ScrollMsg) {}
     fn set_caps_lock(&mut self, _on: bool) {}
     fn release_all(&mut self) {}
+    fn set_screen(&mut self, left: i32, top: i32, width: i32, height: i32) {
+        eprintln!("input: mouse is on the screen at {left},{top} ({width}x{height})");
+    }
 }
 
 struct PrintEvents;
@@ -142,7 +173,7 @@ fn main() {
     cfg.video_port = port + 1;
     cfg.fps = fps;
     cfg.drop_percent = arg("--drop").and_then(|p| p.parse().ok()).unwrap_or(0.0);
-    let replay = Replay { frames, size, fps, next_tick: Instant::now(), positions: HashMap::new() };
+    let replay = Replay { frames, size, fps, next_tick: Instant::now(), positions: HashMap::new(), screen: 0 };
     let _host = Host::start(cfg, Box::new(replay), Box::new(LogInput), Arc::new(PrintEvents)).unwrap_or_else(|e| panic!("{e}"));
     loop {
         std::thread::sleep(Duration::from_secs(3600));

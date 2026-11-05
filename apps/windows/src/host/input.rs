@@ -22,10 +22,17 @@
 //!
 //! Windows doesn't let a normal program send input to a program running as administrator (UIPI):
 //! bb1 must run as admin too to control those (a game launcher, Task Manager).
+//!
+//! Game controllers: each viewer's pads become virtual Xbox 360 controllers through the ViGEmBus
+//! driver (`Gamepads`), so every friend is a separate player; games' rumble goes back to that
+//! viewer. Without the driver (Settings offers to install it) controllers are ignored.
 
 use crate::core::keymap::MAC_CAPS_LOCK;
-use crate::core::proto::{KeyMsg, MouseButtonMsg, MouseMoveMsg, ScrollMsg};
+use crate::core::gamepad::{self, MAX_PADS};
+use crate::core::proto::{GamepadMsg, KeyMsg, MouseButtonMsg, MouseMoveMsg, RumbleMsg, ScrollMsg};
 use crate::logi;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::POINT;
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint};
@@ -212,6 +219,8 @@ pub struct Injector {
     /// The Caps Lock state we last set, and when: GetKeyState can lag right after injecting.
     caps_sent: Option<(bool, Instant)>,
     refused_logged: bool,
+    /// Viewers' game controllers.
+    pub gamepads: Gamepads,
 }
 
 impl Default for Injector {
@@ -247,6 +256,7 @@ impl Injector {
             wheel_lines,
             caps_sent: None,
             refused_logged: false,
+            gamepads: Gamepads::default(),
         }
     }
 
@@ -429,6 +439,198 @@ impl Drop for Injector {
     fn drop(&mut self) {
         self.release_all();
     }
+}
+
+// MARK: Game controllers (ViGEmBus)
+
+pub type RumbleSink = Arc<dyn Fn(u32, RumbleMsg) + Send + Sync>;
+
+/// One viewer's pad: a virtual Xbox 360 controller, plugged in while the pad is.
+struct Pad {
+    target: vigem_client::Xbox360Wired<Arc<vigem_client::Client>>,
+    /// The last report it took (None: none yet).
+    last: Option<gamepad::XReport>,
+}
+
+/// Every viewer's virtual controllers. Connects to ViGEmBus when the first controller arrives (and
+/// again every few seconds while it isn't there, so installing the driver works without restarting).
+#[derive(Default)]
+pub struct Gamepads {
+    bus: Option<Arc<vigem_client::Client>>,
+    bus_tried: Option<Instant>,
+    missing_logged: bool,
+    pads: HashMap<(u32, i64), Pad>,
+    sink: Option<RumbleSink>,
+}
+
+/// How many virtual controllers this process has plugged in (the client side skips them, so a PC
+/// that shares and watches at once doesn't send its friends' controllers back out as its own).
+pub static VIRTUAL_PADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+impl Gamepads {
+    fn count_changed(&self) {
+        VIRTUAL_PADS.store(self.pads.len(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn set_rumble_sink(&mut self, sink: RumbleSink) {
+        self.sink = Some(sink);
+    }
+
+    /// A viewer's controller changed: plug it in on its first state, update it, unplug on connected = false.
+    pub fn update(&mut self, viewer: u32, g: &GamepadMsg) {
+        if g.pad < 0 || g.pad >= MAX_PADS as i64 {
+            return;
+        }
+        let key = (viewer, g.pad);
+        if !g.connected {
+            if self.pads.remove(&key).is_some() {
+                logi!("controllers: viewer {viewer}'s pad {} unplugged", g.pad);
+                self.count_changed();
+            }
+            return;
+        }
+        let report = gamepad::report(g);
+        if !self.pads.contains_key(&key) {
+            let Some(bus) = self.bus() else { return };
+            match plug(bus, viewer, g.pad, self.sink.clone()) {
+                Ok(pad) => {
+                    logi!("controllers: viewer {viewer}'s pad {} ({}) is an Xbox 360 controller now", g.pad, g.name.as_deref().unwrap_or("a controller"));
+                    self.pads.insert(key, pad);
+                    self.count_changed();
+                }
+                Err(e) => {
+                    logi!("controllers: couldn't plug in a virtual controller for viewer {viewer}'s pad {}: {e:?}", g.pad);
+                    return;
+                }
+            }
+        }
+        let Some(pad) = self.pads.get_mut(&key) else { return };
+        if pad.last == Some(report) {
+            return;
+        }
+        // ViGEmBus sometimes refuses a report (259) while it's settling a newly plugged controller. A lost
+        // report could be a button's release (a button stuck down), so try a few more times, briefly.
+        let mut result = pad.target.update(&xgamepad(report));
+        for _ in 0..5 {
+            if result.is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+            result = pad.target.update(&xgamepad(report));
+        }
+        match result {
+            Ok(()) => pad.last = Some(report),
+            Err(vigem_client::Error::TargetNotReady) => {}
+            Err(e) => logi!("controllers: viewer {viewer}'s pad {}: update failed: {e:?}", g.pad),
+        }
+    }
+
+    /// Nothing pressed on any of this viewer's controllers (they stay plugged in).
+    pub fn release(&mut self, viewer: u32) {
+        let neutral = gamepad::XReport::default();
+        for (_, pad) in self.pads.iter_mut().filter(|((v, _), _)| *v == viewer) {
+            if pad.target.update(&xgamepad(neutral)).is_ok() {
+                pad.last = Some(neutral);
+            }
+        }
+    }
+
+    /// Unplug this viewer's controllers.
+    pub fn viewer_left(&mut self, viewer: u32) {
+        let before = self.pads.len();
+        self.pads.retain(|(v, _), _| *v != viewer);
+        self.count_changed();
+        if self.pads.len() != before {
+            logi!("controllers: unplugged viewer {viewer}'s {} controller(s)", before - self.pads.len());
+        }
+    }
+
+    fn bus(&mut self) -> Option<Arc<vigem_client::Client>> {
+        if self.bus.is_none() && self.bus_tried.is_none_or(|t| t.elapsed() > Duration::from_secs(5)) {
+            self.bus_tried = Some(Instant::now());
+            match vigem_client::Client::connect() {
+                Ok(c) => {
+                    logi!("controllers: connected to ViGEmBus");
+                    self.bus = Some(Arc::new(c));
+                }
+                Err(e) => {
+                    if !self.missing_logged {
+                        self.missing_logged = true;
+                        logi!("controllers: ViGEmBus isn't installed ({e:?}); friends' controllers are ignored until it is (Settings → Game controllers → Install driver)");
+                    }
+                }
+            }
+        }
+        self.bus.clone()
+    }
+}
+
+fn xgamepad(r: gamepad::XReport) -> vigem_client::XGamepad {
+    vigem_client::XGamepad {
+        buttons: vigem_client::XButtons(r.buttons),
+        left_trigger: r.left_trigger,
+        right_trigger: r.right_trigger,
+        thumb_lx: r.thumb_lx,
+        thumb_ly: r.thumb_ly,
+        thumb_rx: r.thumb_rx,
+        thumb_ry: r.thumb_ry,
+    }
+}
+
+/// Plugs in a virtual Xbox 360 controller and forwards what games ask its motors to do.
+fn plug(bus: Arc<vigem_client::Client>, viewer: u32, pad: i64, sink: Option<RumbleSink>) -> Result<Pad, vigem_client::Error> {
+    let mut target = vigem_client::Xbox360Wired::new(bus, vigem_client::TargetId::XBOX360_WIRED);
+    target.plugin()?;
+    // Until Windows has set it up, reports may be refused. Usually a few milliseconds.
+    target.wait_ready()?;
+    // Even after that, ViGEmBus refuses the very first report (ERROR_NO_MORE_ITEMS, 259; seen on the
+    // owner's PC with ViGEmBus 1.22), and the ones after it go through. Send a neutral one until it's
+    // taken, so the viewer's first real state isn't the one lost.
+    let neutral = xgamepad(gamepad::XReport::default());
+    for _ in 0..20 {
+        if target.update(&neutral).is_ok() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    if let Some(sink) = sink {
+        match target.request_notification() {
+            Ok(n) => {
+                // Games often set the same strengths every frame: only changes go to the viewer (it
+                // keeps the motors going until told otherwise). The thread ends when the target is unplugged.
+                let mut last = (0u8, 0u8);
+                let _ = n.spawn_thread(move |_, n| {
+                    let now = (n.large_motor, n.small_motor);
+                    if now != last {
+                        last = now;
+                        sink(viewer, RumbleMsg { pad, large: now.0 as i64, small: now.1 as i64 });
+                    }
+                });
+            }
+            Err(e) => logi!("controllers: no rumble for viewer {viewer}'s pad {pad}: {e:?}"),
+        }
+    }
+    Ok(Pad { target, last: None })
+}
+
+static DRIVER_CHECK: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+
+/// Whether the ViGEmBus driver is there (Settings asks while it paints: checked at most every few seconds).
+pub fn controller_driver_installed() -> bool {
+    let mut cache = DRIVER_CHECK.lock().unwrap();
+    if let Some((at, ok)) = *cache {
+        if at.elapsed() < Duration::from_secs(3) {
+            return ok;
+        }
+    }
+    let ok = vigem_client::Client::connect().is_ok();
+    *cache = Some((Instant::now(), ok));
+    ok
+}
+
+/// Check again on the next ask (its installer just finished).
+pub fn recheck_controller_driver() {
+    *DRIVER_CHECK.lock().unwrap() = None;
 }
 
 #[cfg(test)]

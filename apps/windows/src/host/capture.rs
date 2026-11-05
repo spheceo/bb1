@@ -1,8 +1,9 @@
 //! Screen capture with DXGI Desktop Duplication, on the GPU from start to finish.
 //!
-//! `Capture::new(output)` finds the monitor (0 = the primary one, then the others in DXGI order),
-//! creates a Direct3D 11 device on the graphics card that drives it (BGRA + video support, made
-//! multithread-safe because encoders on other threads use the same device and immediate context),
+//! `Capture::new(output)` finds the monitor (0 = the primary one, then the others in DXGI order;
+//! `Capture::for_monitor` by its name, \\.\DISPLAY3), creates a Direct3D 11 device on the graphics
+//! card that drives it (BGRA + video support, made multithread-safe because encoders on other
+//! threads use the same device and immediate context),
 //! and starts duplicating that monitor. `next()` waits for the screen to change, copies the new
 //! picture into one of our own textures (a ring of three, so the frame an encoder is still reading
 //! isn't overwritten by the next one), draws the mouse pointer into the copy with a tiny shader, and
@@ -130,9 +131,22 @@ enum Failure {
 
 impl Capture {
     pub fn new(output: usize) -> Result<Capture, String> {
+        let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1() }.map_err(|e| format!("DXGI: {e}"))?;
+        Capture::on(find_output(&factory, output)?)
+    }
+
+    /// The monitor with this name (\\.\DISPLAY3, as in `monitors()`), on whichever graphics card drives it.
+    pub fn for_monitor(id: &str) -> Result<Capture, String> {
+        let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1() }.map_err(|e| format!("DXGI: {e}"))?;
+        let found = attached_outputs(&factory)?
+            .into_iter()
+            .find(|f| wide(&f.desc.DeviceName) == id)
+            .ok_or_else(|| format!("there's no monitor {id} now"))?;
+        Capture::on(found)
+    }
+
+    fn on(found: FoundOutput) -> Result<Capture, String> {
         unsafe {
-            let factory: IDXGIFactory1 = CreateDXGIFactory1().map_err(|e| format!("DXGI: {e}"))?;
-            let found = find_output(&factory, output)?;
             let adesc = found.adapter.GetDesc1().map_err(|e| format!("adapter: {e}"))?;
             let gpu = wide(&adesc.Description);
             let (device, context) = create_device(&found.adapter).map_err(|e| format!("Direct3D 11 on {gpu}: {e}"))?;
@@ -182,6 +196,18 @@ impl Capture {
             })?;
             Ok(capture)
         }
+    }
+
+    /// The monitor's name (\\.\DISPLAY3), the id viewers pick it by.
+    pub fn monitor_id(&self) -> String {
+        wide(&self.output_name)
+    }
+
+    /// Where the monitor is on the desktop now (left, top, width, height), for the mouse.
+    pub fn desktop_rect(&self) -> Option<(i32, i32, i32, i32)> {
+        let desc = unsafe { self.find_again().and_then(|o| o.GetDesc()) }.ok()?;
+        let r = desc.DesktopCoordinates;
+        Some((r.left, r.top, r.right - r.left, r.bottom - r.top))
     }
 
     /// The device every encoder must use (same adapter as the monitor, so no copies between GPUs).
@@ -686,6 +712,16 @@ struct FoundOutput {
 /// Monitor `index` across all adapters: the primary one (the monitor at 0,0) first, then the
 /// others in DXGI order.
 fn find_output(factory: &IDXGIFactory1, index: usize) -> Result<FoundOutput, String> {
+    let mut all = attached_outputs(factory)?;
+    let count = all.len();
+    if index >= count {
+        return Err(format!("there's no monitor {index} ({count} attached)"));
+    }
+    Ok(all.swap_remove(index))
+}
+
+/// Every monitor on the desktop, on every adapter: the primary one (at 0,0) first, then DXGI order.
+fn attached_outputs(factory: &IDXGIFactory1) -> Result<Vec<FoundOutput>, String> {
     let mut all = Vec::new();
     unsafe {
         let mut a = 0;
@@ -709,11 +745,76 @@ fn find_output(factory: &IDXGIFactory1, index: usize) -> Result<FoundOutput, Str
         let primary = all.remove(p);
         all.insert(0, primary);
     }
-    let count = all.len();
-    if index >= count {
-        return Err(format!("there's no monitor {index} ({count} attached)"));
+    Ok(all)
+}
+
+/// One monitor on the desktop, for the viewers' list of screens.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Monitor {
+    /// \\.\DISPLAY3
+    pub id: String,
+    /// (left, top, width, height) on the desktop, in pixels.
+    pub rect: (i32, i32, i32, i32),
+    /// The one at 0,0.
+    pub primary: bool,
+}
+
+/// The monitors now, primary first (empty if DXGI can't say). Quick: no devices are created.
+pub fn monitors() -> Vec<Monitor> {
+    // A new factory each time: an old one doesn't see monitors plugged in since.
+    let Ok(factory) = (unsafe { CreateDXGIFactory1::<IDXGIFactory1>() }) else { return Vec::new() };
+    attached_outputs(&factory)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|f| {
+            let r = f.desc.DesktopCoordinates;
+            Monitor { id: wide(&f.desc.DeviceName), rect: (r.left, r.top, r.right - r.left, r.bottom - r.top), primary: r.left == 0 && r.top == 0 }
+        })
+        .collect()
+}
+
+/// The monitors' own names ("LG ULTRAWIDE", from their EDID) by GDI name (\\.\DISPLAY3). Monitors
+/// that don't say (or a Windows that won't tell) are left out.
+pub fn monitor_names() -> std::collections::HashMap<String, String> {
+    use windows::Win32::Devices::Display::*;
+    let mut names = std::collections::HashMap::new();
+    unsafe {
+        let (mut path_count, mut mode_count) = (0u32, 0u32);
+        if GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut path_count, &mut mode_count).is_err() {
+            return names;
+        }
+        let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); path_count as usize];
+        let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); mode_count as usize];
+        if QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &mut path_count, paths.as_mut_ptr(), &mut mode_count, modes.as_mut_ptr(), None).is_err() {
+            return names;
+        }
+        paths.truncate(path_count as usize);
+        for p in &paths {
+            let mut source = DISPLAYCONFIG_SOURCE_DEVICE_NAME::default();
+            source.header = DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                r#type: DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+                size: std::mem::size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32,
+                adapterId: p.sourceInfo.adapterId,
+                id: p.sourceInfo.id,
+            };
+            let mut target = DISPLAYCONFIG_TARGET_DEVICE_NAME::default();
+            target.header = DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                r#type: DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
+                size: std::mem::size_of::<DISPLAYCONFIG_TARGET_DEVICE_NAME>() as u32,
+                adapterId: p.targetInfo.adapterId,
+                id: p.targetInfo.id,
+            };
+            if DisplayConfigGetDeviceInfo(&mut source.header) != 0 || DisplayConfigGetDeviceInfo(&mut target.header) != 0 {
+                continue;
+            }
+            let name = wide(&target.monitorFriendlyDeviceName).trim().to_string();
+            if !name.is_empty() {
+                // Mirrored monitors share a source: the first name wins.
+                names.entry(wide(&source.viewGdiDeviceName)).or_insert(name);
+            }
+        }
     }
-    Ok(all.swap_remove(index))
+    names
 }
 
 /// Raises the GPU priority of our device and process. Logs what worked; never fails.

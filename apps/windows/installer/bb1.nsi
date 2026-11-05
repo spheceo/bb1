@@ -1,5 +1,8 @@
 ; bb1 for Windows installer. Build with scripts/installer.sh (Mac) or the
-; Windows workflow:  makensis -DVERSION=0.1.0 -DBUILD=45 -DEXE=path\to\bb1.exe -DOUT=bb1-setup.exe installer/bb1.nsi
+; Windows workflow:  makensis -DVERSION=0.1.0 -DBUILD=45 -DEXE=path\to\bb1.exe -DSDL=path\to\SDL3.dll -DOUT=bb1-setup.exe installer/bb1.nsi
+;
+; SDL3.dll (game controllers, zlib licence) comes from SDL's official Windows release zip; both
+; build scripts download it and check its SHA-256.
 ;
 ; Installs to Program Files (only admins can write there, so excluding the
 ; folder from Defender doesn't give other programs a hiding place), adds the
@@ -14,6 +17,9 @@
 !endif
 !ifndef EXE
   !error "Pass -DEXE=<path to bb1.exe>"
+!endif
+!ifndef SDL
+  !error "Pass -DSDL=<path to SDL3.dll>"
 !endif
 !ifndef OUT
   !define OUT "bb1-setup.exe"
@@ -125,6 +131,12 @@ Section "-${APP}" SecApp
     Rename "$INSTDIR\${APP}.exe" "$INSTDIR\${APP}.old.exe"
     Delete /REBOOTOK "$INSTDIR\${APP}.old.exe"
   File "/oname=${APP}.exe" "${EXE}"
+  ; bb1 loads SDL3.dll only from its own folder, for game controllers. Moved aside like bb1.exe.
+  Delete "$INSTDIR\SDL3.old.dll"
+  IfFileExists "$INSTDIR\SDL3.dll" 0 +3
+    Rename "$INSTDIR\SDL3.dll" "$INSTDIR\SDL3.old.dll"
+    Delete /REBOOTOK "$INSTDIR\SDL3.old.dll"
+  File "/oname=SDL3.dll" "${SDL}"
   WriteUninstaller "$INSTDIR\Uninstall ${APP}.exe"
 
   ; Let bb1 hear Macs on the home network (Bonjour answers) and their video, on any network type:
@@ -178,6 +190,8 @@ Section "Uninstall"
   Delete "$DESKTOP\${APP}.lnk"
   Delete "$INSTDIR\${APP}.exe"
   Delete "$INSTDIR\${APP}.old.exe"
+  Delete "$INSTDIR\SDL3.dll"
+  Delete "$INSTDIR\SDL3.old.dll"
   Delete "$INSTDIR\Uninstall ${APP}.exe"
   RMDir "$INSTDIR"
   DeleteRegKey HKLM "${UNINST_KEY}"

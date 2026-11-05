@@ -12,6 +12,9 @@ final class InputInjector {
     private var scrollRemainder = (x: 0.0, y: 0.0)
     private var capsLockOn = false
     var invertScroll = false
+    /// The display viewers see (nil: the main one): mouse positions (0…1) are on it.
+    var displayID: CGDirectDisplayID?
+    private var bounds: CGRect { CGDisplayBounds(displayID ?? CGMainDisplayID()) }
 
     // Virtual key code → (generic flag, device-specific left/right bit)
     private static let modifiers: [UInt16: (CGEventFlags, UInt64)] = [
@@ -32,7 +35,7 @@ final class InputInjector {
     }
 
     private func point(_ x: Double, _ y: Double) -> CGPoint {
-        let bounds = CGDisplayBounds(CGMainDisplayID())
+        let bounds = self.bounds
         let cx = min(max(x, 0), 1), cy = min(max(y, 0), 1)
         return CGPoint(x: bounds.minX + cx * (bounds.width - 1), y: bounds.minY + cy * (bounds.height - 1))
     }
@@ -130,7 +133,7 @@ final class InputInjector {
     func releaseAll() {
         let held = keysDown.sorted { InputInjector.modifiers[$0] == nil && InputInjector.modifiers[$1] != nil }
         for code in held { key(KeyMsg(code: code, down: false, isRepeat: false)) }
-        let bounds = CGDisplayBounds(CGMainDisplayID())
+        let bounds = self.bounds
         for b in buttonsDown {
             let x = bounds.width > 1 ? (lastPoint.x - bounds.minX) / (bounds.width - 1) : 0
             let y = bounds.height > 1 ? (lastPoint.y - bounds.minY) / (bounds.height - 1) : 0

@@ -46,6 +46,12 @@ The client assembles a frame once all `packet_count` packets arrive. If a frame 
 | `STATS` | client → host | Loss, decode time, display time; used for bitrate decisions |
 | `CLIPBOARD` | both | Later |
 | `BYE` | both | Clean disconnect |
+| `DISPLAYS` | host → client | The host's screens (`id`, `name`, `width`, `height`, `primary`) and which one is shared. Sent after `WELCOME` and whenever either changes |
+| `SELECT_DISPLAY` | client → host | Share this screen instead (an `id` from `DISPLAYS`). One capture serves everyone, so it changes for every viewer; each gets a new `STREAM_CONFIG` (new epoch) and a keyframe. Only viewers allowed the mouse or keyboard may switch |
+| `GAMEPAD` | client → host | One controller's state when it changes, Xbox layout whatever the controller: `pad` 0–3, `connected`, `buttons` (XInput `wButtons` bits), triggers `lt`/`rt` 0–255, sticks `lx`/`ly`/`rx`/`ry` −32768…32767 with up and right positive, `name` on the first one. A Windows host plugs in a virtual Xbox 360 controller per (viewer, pad) through ViGEmBus; only while the owner allows that viewer's controller |
+| `RUMBLE` | host → client | The game set a controller's motors: `pad`, `large`, `small` 0–255 (0, 0 stops) |
+
+Peers ignore message types they don't know, so these work with older builds on the other side (they're just not acted on).
 
 ## Pointer messages
 

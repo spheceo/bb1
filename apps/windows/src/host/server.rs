@@ -6,10 +6,11 @@ use crate::core::host::{Encoded, Host, HostConfig, HostEvents, InputBackend, Vid
 use crate::core::proto::*;
 use crate::core::store;
 use crate::host::audio_in::Loopback;
-use crate::host::capture::Capture;
+use crate::host::capture::{self, Capture};
 use crate::host::input::Injector;
 use crate::host::nvenc::{Codec, Encoder, EncoderConfig};
 use crate::logi;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,6 +23,15 @@ struct NvidiaVideo {
     capture: Capture,
     encoders: HashMap<u32, Encoder>,
     latest: Option<ID3D11Texture2D>,
+    draw_cursor: bool,
+    /// Monitor names from Windows, and the monitors they were read for (read again when those change).
+    names: RefCell<(Vec<String>, HashMap<String, String>)>,
+}
+
+impl NvidiaVideo {
+    fn new(capture: Capture) -> NvidiaVideo {
+        NvidiaVideo { capture, encoders: HashMap::new(), latest: None, draw_cursor: true, names: RefCell::new((Vec::new(), HashMap::new())) }
+    }
 }
 
 // The D3D11 device is multithread-protected (capture.rs) and only the video thread uses this.
@@ -75,7 +85,54 @@ impl VideoBackend for NvidiaVideo {
     }
 
     fn set_cursor_in_video(&mut self, on: bool) {
+        self.draw_cursor = on;
         self.capture.set_draw_cursor(on);
+    }
+
+    fn displays(&self) -> Vec<DisplayInfo> {
+        let monitors = capture::monitors();
+        let ids: Vec<String> = monitors.iter().map(|m| m.id.clone()).collect();
+        let mut names = self.names.borrow_mut();
+        if names.0 != ids {
+            *names = (ids, capture::monitor_names());
+        }
+        monitors
+            .iter()
+            .enumerate()
+            .map(|(i, m)| DisplayInfo {
+                id: m.id.clone(),
+                name: names.1.get(&m.id).cloned().unwrap_or_else(|| format!("Screen {}", i + 1)),
+                width: m.rect.2 as i64,
+                height: m.rect.3 as i64,
+                primary: m.primary,
+            })
+            .collect()
+    }
+
+    fn current_display(&self) -> String {
+        self.capture.monitor_id()
+    }
+
+    /// A new capture of that monitor (on the graphics card driving it). The encoders hold the old
+    /// device, so they all go; the host opens new ones for everyone (with a new epoch and a keyframe).
+    fn select_display(&mut self, id: &str) -> Result<(), String> {
+        if id == self.capture.monitor_id() {
+            return Ok(());
+        }
+        let mut capture = Capture::for_monitor(id)?;
+        // Make sure that card can encode before letting go of the screen that works.
+        let (width, height) = capture.size();
+        Encoder::new(&capture.device(), EncoderConfig { width, height, fps: 60, bitrate_kbps: 10_000, codec: Codec::H264 })
+            .map_err(|e| format!("its graphics card can't encode video ({e})"))?;
+        capture.set_draw_cursor(self.draw_cursor);
+        self.encoders.clear();
+        self.latest = None;
+        self.capture = capture;
+        Ok(())
+    }
+
+    fn display_rect(&self) -> Option<(i32, i32, i32, i32)> {
+        self.capture.desktop_rect()
     }
 }
 
@@ -105,6 +162,21 @@ impl InputBackend for WindowsInput {
     fn release_all(&mut self) {
         self.0.release_all();
     }
+    fn set_screen(&mut self, left: i32, top: i32, width: i32, height: i32) {
+        self.0.set_screen_rect(left, top, width, height);
+    }
+    fn gamepad(&mut self, viewer: u32, g: &GamepadMsg) {
+        self.0.gamepads.update(viewer, g);
+    }
+    fn release_gamepads(&mut self, viewer: u32) {
+        self.0.gamepads.release(viewer);
+    }
+    fn viewer_left(&mut self, viewer: u32) {
+        self.0.gamepads.viewer_left(viewer);
+    }
+    fn set_rumble_sink(&mut self, sink: Box<dyn Fn(u32, RumbleMsg) + Send + Sync>) {
+        self.0.gamepads.set_rumble_sink(sink.into());
+    }
 }
 
 // MARK: Sharing
@@ -124,7 +196,7 @@ impl Sharing {
             return Err("this PC needs an NVIDIA graphics card with an up-to-date driver to share its screen".into());
         }
         let capture = Capture::new(0).map_err(|e| format!("couldn't capture the screen: {e}"))?;
-        let video = NvidiaVideo { capture, encoders: HashMap::new(), latest: None };
+        let video = NvidiaVideo::new(capture);
         let mut cfg = HostConfig::new(&name, &store::device_id());
         cfg.allow_tailscale = settings.allow_tailscale;
         cfg.allow_pairing = settings.allow_pairing;

@@ -26,6 +26,8 @@ pub enum Act {
     /// Open or close the muted-apps list.
     Dropdown,
     Mute(String, bool),
+    /// Download and run the ViGEmBus installer (friends' controllers need it).
+    InstallControllerDriver,
 }
 
 pub type Acts = Vec<(D2D_RECT_F, Act)>;
@@ -157,7 +159,7 @@ pub fn settings_page(g: &mut Gfx, x: f32, top: f32, w: f32, acts: &mut Acts, hov
 
     // Sharing
     heading(g, &mut y, "Sharing", "Let your other computers see and use this PC. Needs an NVIDIA graphics card.");
-    card(g, y, 2);
+    card(g, y, 3);
     let sharing = tray::is_sharing();
     let detail = match (sharing, tray::problem()) {
         (true, _) => "On: computers can connect from their bb1.".to_string(),
@@ -171,6 +173,8 @@ pub fn settings_page(g: &mut Gfx, x: f32, top: f32, w: f32, acts: &mut Acts, hov
     y += ROW;
     label(g, y, "Don't share sound from", "Browsers are muted whole: every tab's sound comes from one process.");
     let dropdown_anchor = Some(muted_trigger(g, x + w - 20.0, y + ROW / 2.0, &s.muted_apps, acts, hover));
+    y += ROW;
+    controllers_row(g, x, y, w, acts, hover, &label);
     y += ROW + 28.0;
 
     // Who can connect
@@ -340,9 +344,129 @@ pub fn perform(act: &Act) -> bool {
             tray::settings_changed();
             return true;
         }
+        Act::InstallControllerDriver => install_controller_driver(),
         Act::Gear | Act::Back | Act::Dropdown => {}
     }
     false
+}
+
+// MARK: Game controllers (the ViGEmBus driver)
+
+#[derive(Clone, PartialEq)]
+enum DriverInstall {
+    Idle,
+    Downloading,
+    /// Its installer is open.
+    Installing,
+    Failed(String),
+}
+
+static DRIVER_INSTALL: std::sync::Mutex<DriverInstall> = std::sync::Mutex::new(DriverInstall::Idle);
+
+/// "Game controllers": Ready once ViGEmBus is installed, otherwise a pill that installs it.
+fn controllers_row(g: &mut Gfx, x: f32, y: f32, w: f32, acts: &mut Acts, hover: Option<&Act>, label: &dyn Fn(&mut Gfx, f32, &str, &str)) {
+    let detail = "Friends' controllers become Xbox controllers on this PC.";
+    let cy = y + ROW / 2.0;
+    let right = x + w - 20.0;
+    if crate::host::input::controller_driver_installed() {
+        label(g, y, "Game controllers", detail);
+        let tw = g.measure("Ready", Font::Button);
+        g.text("Ready", Font::Button, line_box(right - tw - 2.0, cy - 9.0, tw + 4.0, Font::Button), Color::white(0.55));
+        return;
+    }
+    let state = DRIVER_INSTALL.lock().unwrap().clone();
+    let failed;
+    let detail = match &state {
+        DriverInstall::Failed(e) => {
+            failed = format!("Couldn't install the controller driver: {e}");
+            failed.as_str()
+        }
+        _ => detail,
+    };
+    label(g, y, "Game controllers", detail);
+    match state {
+        DriverInstall::Downloading | DriverInstall::Installing => {
+            let text = if state == DriverInstall::Downloading { "Downloading…" } else { "Installing…" };
+            g.pill(text, right, cy, false, false, true);
+        }
+        DriverInstall::Idle | DriverInstall::Failed(_) => {
+            let act = Act::InstallControllerDriver;
+            let r = g.pill(if matches!(state, DriverInstall::Idle) { "Install driver" } else { "Try again" }, right, cy, true, hovered(hover, &act), true);
+            acts.push((r, act));
+        }
+    }
+}
+
+/// The official ViGEmBus installer, from its GitHub releases (it has its own window and asks for admin).
+fn install_controller_driver() {
+    {
+        let mut st = DRIVER_INSTALL.lock().unwrap();
+        if matches!(*st, DriverInstall::Downloading | DriverInstall::Installing) {
+            return;
+        }
+        *st = DriverInstall::Downloading;
+    }
+    std::thread::spawn(|| {
+        let result = download_and_run_vigem(|| {
+            *DRIVER_INSTALL.lock().unwrap() = DriverInstall::Installing;
+            app::post(app::UiEvent::HostsChanged);
+        });
+        if let Err(e) = &result {
+            crate::logi!("controllers: driver install: {e}");
+        }
+        *DRIVER_INSTALL.lock().unwrap() = match result {
+            Ok(()) => DriverInstall::Idle,
+            Err(e) => DriverInstall::Failed(e),
+        };
+        app::post(app::UiEvent::HostsChanged); // repaint (and check for the driver again)
+    });
+}
+
+fn download_and_run_vigem(started: impl Fn()) -> Result<(), String> {
+    use windows::Win32::UI::Shell::{SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW};
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    const FALLBACK: &str = "https://github.com/nefarius/ViGEmBus/releases/download/v1.22.0/ViGEmBus_1.22.0_x64_x86_arm64.exe";
+    #[derive(serde::Deserialize)]
+    struct Release {
+        assets: Vec<Asset>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Asset {
+        name: String,
+        browser_download_url: String,
+        size: u64,
+    }
+    let latest = crate::core::updater::fetch("https://api.github.com/repos/nefarius/ViGEmBus/releases/latest")
+        .and_then(|j| serde_json::from_slice::<Release>(&j).ok())
+        .and_then(|r| r.assets.into_iter().find(|a| a.name.ends_with(".exe") && a.name.contains("x64")));
+    let (name, url, size) = match latest {
+        Some(a) => (a.name, a.browser_download_url, a.size),
+        None => ("ViGEmBus_1.22.0_x64_x86_arm64.exe".to_string(), FALLBACK.to_string(), 0),
+    };
+    let name: String = name.chars().filter(|c| c.is_ascii_alphanumeric() || "._-".contains(*c)).collect();
+    let path = std::env::temp_dir().join(name);
+    crate::logi!("controllers: downloading {url}");
+    crate::core::updater::download(&url, &path, size, |_| {})?;
+    started();
+    let file = windows::core::HSTRING::from(path.as_os_str());
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC,
+        lpVerb: windows::core::w!("runas"),
+        lpFile: windows::core::PCWSTR(file.as_ptr()),
+        nShow: SW_SHOWNORMAL.0,
+        ..Default::default()
+    };
+    unsafe {
+        ShellExecuteExW(&mut info).map_err(|e| format!("the installer didn't start ({e})"))?;
+        if !info.hProcess.is_invalid() {
+            windows::Win32::System::Threading::WaitForSingleObject(info.hProcess, windows::Win32::System::Threading::INFINITE);
+            let _ = windows::Win32::Foundation::CloseHandle(info.hProcess);
+        }
+    }
+    let _ = std::fs::remove_file(&path);
+    crate::host::input::recheck_controller_driver();
+    Ok(())
 }
 
 fn open_folder(path: &std::path::Path) {

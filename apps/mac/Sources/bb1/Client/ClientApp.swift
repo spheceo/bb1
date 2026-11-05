@@ -10,9 +10,11 @@ struct ClientOptions {
     var pair = false
     var headless = false
     var seconds: Double = 10
+    /// --headless: ask the host to share this screen (an id from its list) once it has listed them.
+    var screen: String?
 
     static let usage = """
-    usage: bb1 client [--host ADDRESS[:PORT] [--fallback ADDRESS[:PORT]]] [--key KEY | --tailscale | --pair] [--headless [--seconds N]]
+    usage: bb1 client [--host ADDRESS[:PORT] [--fallback ADDRESS[:PORT]]] [--key KEY | --tailscale | --pair] [--headless [--seconds N] [--screen ID]]
       --host           connect straight away (signs in with a remembered pairing if there is one)
       --fallback       another address for the same Mac, used when --host stops answering
       --key KEY        sign in with an old pairing key
@@ -20,6 +22,7 @@ struct ClientOptions {
       --pair           pair with a 6-digit code (asked in the terminal with --headless)
       --headless       no window: decode and print stats, then exit (for testing)
       --seconds N      how long --headless runs (default 10)
+      --screen ID      with --headless: ask the host to share that screen (ids are printed as "displays:")
     """
 
     static func parse(_ args: [String]) -> ClientOptions {
@@ -39,6 +42,7 @@ struct ClientOptions {
             case "--pair": o.pair = true
             case "--headless": o.headless = true
             case "--seconds": o.seconds = Double(next()) ?? 10
+            case "--screen": o.screen = next()
             case "-h", "--help": print(usage); exit(0)
             default:
                 if args[i].hasPrefix("-psn") || args[i].hasPrefix("-NS") { i += 1; continue }
@@ -214,10 +218,13 @@ final class HeadlessClient {
     let connection: ClientConnection
     let seconds: Double
     private var last: ClientStats?
+    private let screen: String?
+    private var askedForScreen = false
 
-    init(target: ClientTarget, seconds: Double) {
+    init(target: ClientTarget, seconds: Double, screen: String? = nil) {
         connection = ClientConnection(target: target)
         self.seconds = seconds
+        self.screen = screen
     }
 
     func run() {
@@ -238,6 +245,13 @@ final class HeadlessClient {
         }
         connection.onCursor = { c in print("cursor: \(Int(c.width))×\(Int(c.height)) pt, hot spot (\(Int(c.hotX)), \(Int(c.hotY))), \(c.png.count) bytes") }
         connection.onNotice = { print("notice: \($0)") }
+        connection.onDisplays = { [weak self] d in
+            print("displays: \(d.displays.map { "\($0.id) \"\($0.name)\" \($0.width)x\($0.height)\($0.primary ? " main" : "")" }.joined(separator: ", ")) · sharing \(d.current)")
+            guard let self, let screen = self.screen, !self.askedForScreen else { return }
+            self.askedForScreen = true
+            print("asking for screen \(screen)")
+            connection.send(.selectDisplay(id: screen))
+        }
         connection.onStats = { [weak self] s in
             self?.last = s
             print(s.summary)

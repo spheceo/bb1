@@ -3,7 +3,8 @@
 //! Control follows the pointer, like the Mac client: while this window is in front and the pointer
 //! is on the picture (or the window is full screen), keys go to the Mac, including the Windows key,
 //! Alt+Tab and other shortcuts (through a low-level keyboard hook). Move the pointer off the picture
-//! and the keyboard is the PC's again. Ctrl+Alt+Enter switches full screen.
+//! and the keyboard is the PC's again. Ctrl+Alt+Enter switches full screen; Ctrl+Alt+→ / ← show the
+//! host's next / previous screen (when it has more than one; also in the title bar's menu).
 
 use crate::core::client::{Client, Stats};
 use crate::core::keymap::{self, MAC_CAPS_LOCK, ModifierLayout};
@@ -24,6 +25,8 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{HSTRING, PCWSTR, w};
 
 const WM_APP_FULLSCREEN: u32 = WM_APP + 10;
+/// wparam 1: the host's next screen, usize::MAX (-1): the previous one.
+const WM_APP_SCREEN: u32 = WM_APP + 11;
 const TIMER_CLIPBOARD: usize = 2;
 const TIMER_MOVE: usize = 3;
 /// At most one pointer move per this long (125 a second, about what a Mac sends). A 500–1000 Hz
@@ -95,6 +98,11 @@ const CMD_SOUND: usize = 0x50;
 const CMD_CLIPBOARD: usize = 0x60;
 const CMD_DISCONNECT: usize = 0x70;
 const CMD_KEYFRAME: usize = 0x80;
+const CMD_SCREEN_NEXT: usize = 0x90;
+const CMD_SCREEN_PREVIOUS: usize = 0xA0;
+/// The host's screens in the Screen submenu: CMD_SCREEN_FIRST + 0x10 × index (at most 16 screens).
+const CMD_SCREEN_FIRST: usize = 0x100;
+const MAX_SCREENS: usize = 16;
 
 struct State {
     hwnd: HWND,
@@ -109,6 +117,12 @@ struct State {
     altgr_ctrl_to_mac: bool,
     /// Enter is down as part of Ctrl+Alt+Enter.
     fullscreen_enter: bool,
+    /// The arrow of Ctrl+Alt+→ / ← is down.
+    screen_arrow: bool,
+    /// The host's screens (None: it didn't say, or it can't switch).
+    displays: Option<DisplaysMsg>,
+    /// The Screen submenu in the title bar's menu, while there is one.
+    screen_menu: Option<HMENU>,
     buttons_held: u32,
     /// (time ms, x, y, button, count) of the last press, for double clicks.
     last_click: (u32, i32, i32, i64, i64),
@@ -198,6 +212,9 @@ pub fn open(label: &str) -> Sender<VideoCmd> {
                 keys_down: HashSet::new(),
                 altgr_ctrl_to_mac: false,
                 fullscreen_enter: false,
+                screen_arrow: false,
+                displays: None,
+                screen_menu: None,
                 buttons_held: 0,
                 last_click: (0, 0, 0, -1, 0),
                 caps_on: GetKeyState(VK_CAPITAL.0 as i32) & 1 != 0,
@@ -444,6 +461,13 @@ fn handle_key(kb: &KBDLLHOOKSTRUCT, message: u32) -> bool {
         }
         return false;
     }
+    // The arrow of Ctrl+Alt+→ / ←: its repeats and key-up stay here too.
+    if (vk == VK_LEFT.0 || vk == VK_RIGHT.0) && with(|s| s.screen_arrow).unwrap_or(false) {
+        if !down {
+            with(|s| s.screen_arrow = false);
+        }
+        return true;
+    }
     // The Enter of Ctrl+Alt+Enter: its repeats and key-up stay here too (repeats would toggle again).
     if vk == VK_RETURN.0 && with(|s| s.fullscreen_enter).unwrap_or(false) {
         if !down {
@@ -460,18 +484,24 @@ fn handle_key(kb: &KBDLLHOOKSTRUCT, message: u32) -> bool {
         send(Msg::key(code, down, down));
         return true;
     }
+    // Ctrl+Alt+→ / ←: the host's next / previous screen, whenever this window is in front (stays on
+    // this PC, and so never reaches the host either).
+    if down && connected && (vk == VK_LEFT.0 || vk == VK_RIGHT.0) && unsafe { GetForegroundWindow() } == hwnd
+        && ctrl_alt_held() && with(|s| s.displays.as_ref().is_some_and(|d| d.displays.len() > 1)).unwrap_or(false)
+    {
+        with(|s| s.screen_arrow = true);
+        let step = if vk == VK_RIGHT.0 { 1 } else { usize::MAX };
+        unsafe {
+            let _ = PostMessageW(Some(hwnd), WM_APP_SCREEN, WPARAM(step), LPARAM(0));
+        }
+        return true;
+    }
     if !down || !connected || !keyboard_goes_to_mac(hwnd, fullscreen) {
         return false;
     }
-    // Ctrl+Alt+Enter: full screen (stays on this PC). Ctrl and Alt were kept from Windows (sent to
-    // the Mac), so Windows' own key state doesn't know they're down: look at what the Mac has.
+    // Ctrl+Alt+Enter: full screen (stays on this PC).
     if vk == VK_RETURN.0 {
-        let ctrl_alt = with(|s| {
-            let pressed = |scan: u32| [false, true].into_iter().any(|e| keymap::mac_key(scan, e, s.layout).is_some_and(|c| s.keys_down.contains(&c)));
-            pressed(0x1D) && pressed(0x38)
-        })
-        .unwrap_or(false);
-        if ctrl_alt || (key_down(VK_CONTROL) && key_down(VK_MENU)) {
+        if ctrl_alt_held() {
             with(|s| s.fullscreen_enter = true);
             unsafe {
                 let _ = PostMessageW(Some(hwnd), WM_APP_FULLSCREEN, WPARAM(0), LPARAM(0));
@@ -488,6 +518,17 @@ fn key_down(vk: VIRTUAL_KEY) -> bool {
     unsafe { GetAsyncKeyState(vk.0 as i32) as u16 & 0x8000 != 0 }
 }
 
+/// Ctrl and Alt are both down. While they go to the Mac they're kept from Windows, so Windows' own
+/// key state doesn't know they're down: look at what the Mac has too.
+fn ctrl_alt_held() -> bool {
+    let on_mac = with(|s| {
+        let pressed = |scan: u32| [false, true].into_iter().any(|e| keymap::mac_key(scan, e, s.layout).is_some_and(|c| s.keys_down.contains(&c)));
+        pressed(0x1D) && pressed(0x38)
+    })
+    .unwrap_or(false);
+    on_mac || (key_down(VK_CONTROL) && key_down(VK_MENU))
+}
+
 /// Lift everything we pressed on the Mac (focus left, pointer left the picture, disconnect).
 fn release_all() {
     let had = with(|s| {
@@ -496,6 +537,7 @@ fn release_all() {
         s.buttons_held = 0;
         s.altgr_ctrl_to_mac = false;
         s.fullscreen_enter = false;
+        s.screen_arrow = false;
         had
     })
     .unwrap_or(false);
@@ -573,8 +615,82 @@ fn update_menu() {
     }
 }
 
+/// The host's screens, from the host: shown in the Screen submenu (only when there's more than one).
+pub fn set_displays(d: DisplaysMsg) {
+    if with(|s| s.displays.as_ref() == Some(&d)).unwrap_or(true) {
+        return;
+    }
+    with(|s| s.displays = Some(d));
+    rebuild_screen_menu();
+}
+
+/// "LG ULTRAWIDE · 3440×1440 (main)"
+fn screen_label(d: &DisplayInfo) -> String {
+    format!("{} \u{b7} {}\u{d7}{}{}", d.name, d.width, d.height, if d.primary { " (main)" } else { "" })
+}
+
+fn rebuild_screen_menu() {
+    let Some((hwnd, displays, old)) = with(|s| (s.hwnd, s.displays.clone(), s.screen_menu.take())) else { return };
+    unsafe {
+        let menu = GetSystemMenu(hwnd, false);
+        let count = GetMenuItemCount(Some(menu));
+        if let Some(old) = old {
+            // DeleteMenu destroys the submenu too.
+            if let Some(pos) = (0..count).find(|&i| GetSubMenu(menu, i) == old) {
+                let _ = DeleteMenu(menu, pos as u32, MF_BYPOSITION);
+            }
+        }
+        let Some(d) = displays.filter(|d| d.displays.len() > 1) else { return };
+        let Ok(sub) = CreatePopupMenu() else { return };
+        for (i, screen) in d.displays.iter().take(MAX_SCREENS).enumerate() {
+            let t = wide(&screen_label(screen));
+            let checked = if screen.id == d.current { MF_CHECKED } else { MF_UNCHECKED };
+            let _ = AppendMenuW(sub, MF_STRING | checked, CMD_SCREEN_FIRST + i * 0x10, PCWSTR(t.as_ptr()));
+        }
+        let _ = AppendMenuW(sub, MF_SEPARATOR, 0, None);
+        let next = wide("Next screen\tCtrl+Alt+\u{2192}");
+        let _ = AppendMenuW(sub, MF_STRING, CMD_SCREEN_NEXT, PCWSTR(next.as_ptr()));
+        let previous = wide("Previous screen\tCtrl+Alt+\u{2190}");
+        let _ = AppendMenuW(sub, MF_STRING, CMD_SCREEN_PREVIOUS, PCWSTR(previous.as_ptr()));
+        // Right after "Full screen".
+        let count = GetMenuItemCount(Some(menu));
+        let at = (0..count).find(|&i| GetMenuItemID(menu, i) == CMD_FULLSCREEN as u32).map(|i| i + 1).unwrap_or(count);
+        let title = wide("Screen");
+        if InsertMenuW(menu, at as u32, MF_BYPOSITION | MF_POPUP | MF_STRING, sub.0 as usize, PCWSTR(title.as_ptr())).is_ok() {
+            with(|s| s.screen_menu = Some(sub));
+        } else {
+            let _ = DestroyMenu(sub);
+        }
+    }
+}
+
+/// Ask the host for the screen `step` away from the one it's sharing (1 next, usize::MAX previous).
+fn step_screen(step: usize) {
+    let Some(d) = with(|s| s.displays.clone()).flatten() else { return };
+    let n = d.displays.len();
+    if n < 2 {
+        return;
+    }
+    let i = d.displays.iter().position(|x| x.id == d.current).unwrap_or(0);
+    select_screen(&d.displays[(i + step) % n]);
+}
+
+fn select_screen(screen: &DisplayInfo) {
+    logi!("stream: asking for the host's screen {} ({})", screen.id, screen.name);
+    refresh_title(&format!("Screen: {}", screen_label(screen)));
+    send(Msg::SelectDisplay { id: screen.id.clone() });
+}
+
 fn command(hwnd: HWND, id: usize) -> bool {
     match id {
+        CMD_SCREEN_NEXT => step_screen(1),
+        CMD_SCREEN_PREVIOUS => step_screen(usize::MAX),
+        _ if (CMD_SCREEN_FIRST..CMD_SCREEN_FIRST + MAX_SCREENS * 0x10).contains(&id) => {
+            let screen = with(|s| s.displays.as_ref().and_then(|d| d.displays.get((id - CMD_SCREEN_FIRST) / 0x10).cloned())).flatten();
+            if let Some(screen) = screen {
+                select_screen(&screen);
+            }
+        }
         CMD_FULLSCREEN => toggle_fullscreen(hwnd),
         CMD_LAYOUT_STANDARD | CMD_LAYOUT_MAC | CMD_LAYOUT_CTRL => {
             release_all();
@@ -783,6 +899,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_APP_FULLSCREEN => {
             toggle_fullscreen(hwnd);
+            LRESULT(0)
+        }
+        WM_APP_SCREEN => {
+            step_screen(wparam.0);
             LRESULT(0)
         }
         WM_SYSCOMMAND => {

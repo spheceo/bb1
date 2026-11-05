@@ -161,6 +161,10 @@ pub trait Events: Send + Sync + 'static {
     fn cursor(&self, _cursor: CursorMsg) {}
     fn paired(&self, _host: &KnownHost) {}
     fn stats(&self, _stats: &Stats) {}
+    /// The host's screens and which one it's sharing (after welcome, and when either changes).
+    fn displays(&self, _d: DisplaysMsg) {}
+    /// The host's game wants a controller to rumble.
+    fn rumble(&self, _r: RumbleMsg) {}
 }
 
 #[derive(Default)]
@@ -223,6 +227,9 @@ struct Shared {
     cursor_in_video: AtomicBool,
     path: Mutex<String>,
     tcp: Mutex<Option<TcpStream>>,
+    /// Which signed-in session this is (0: not connected). New for every reconnect, so state the
+    /// host forgot (controllers) can be sent again.
+    session: AtomicU64,
 }
 
 /// A connection to one Mac. Cheap to clone; `stop()` ends it.
@@ -264,6 +271,7 @@ impl Client {
             cursor_in_video: AtomicBool::new(cursor_in_video),
             path: Mutex::new(String::new()),
             tcp: Mutex::new(None),
+            session: AtomicU64::new(0),
         });
         let s = shared.clone();
         std::thread::Builder::new().name("bb1 connection".into()).spawn(move || supervise(s)).unwrap();
@@ -289,6 +297,11 @@ impl Client {
                 let _ = tcp.shutdown(Shutdown::Both);
             }
         });
+    }
+
+    /// Changes with every (re)connect; 0 while not connected.
+    pub fn session(&self) -> u64 {
+        self.shared.session.load(Relaxed)
     }
 
     pub fn counters(&self) -> &Counters {
@@ -432,6 +445,7 @@ fn supervise(shared: Arc<Shared>) {
 }
 
 fn teardown(shared: &Shared) {
+    shared.session.store(0, Relaxed);
     crate::core::log::set_sink(None);
     *shared.writer.lock().unwrap() = None;
     if let Some(tcp) = shared.tcp.lock().unwrap().take() {
@@ -820,6 +834,8 @@ impl Session {
                     self.send(Msg::SetAudio(v(true)));
                 }
                 shared.events.welcome(&host_name);
+                static SESSIONS: AtomicU64 = AtomicU64::new(0);
+                shared.session.store(SESSIONS.fetch_add(1, Relaxed) + 1, Relaxed);
             }
             Msg::StreamConfig(c) => {
                 let c = c.v;
@@ -852,6 +868,12 @@ impl Session {
             Msg::Bye(r) => return Some(End::Ended(format!("The Mac ended the session: {}", r.v))),
             Msg::Clipboard(c) => shared.events.clipboard(c.v),
             Msg::Cursor(c) => shared.events.cursor(c.v),
+            Msg::Displays(d) => {
+                let d = d.v;
+                logi!("client: host has {} screen(s), sharing {}", d.displays.len(), d.current);
+                shared.events.displays(d);
+            }
+            Msg::Rumble(r) => shared.events.rumble(r.v),
             Msg::Paired(p) => {
                 let p = p.v;
                 let mut t = shared.target.lock().unwrap();

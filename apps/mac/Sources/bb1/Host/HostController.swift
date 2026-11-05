@@ -269,6 +269,12 @@ final class HostController {
     private var watchdog: DispatchSourceTimer?
     private var activity: NSObjectProtocol?
     private var displayDebounce: DispatchWorkItem?
+    /// The display viewers see (nil: the main one). Any viewer may switch it, and everyone sees the switch.
+    private var sharedDisplay: CGDirectDisplayID?
+    /// The list of displays as last sent to viewers.
+    private var lastDisplays: DisplaysMsg?
+    /// Display names ("LG HDR 4K") by display, read on the main thread.
+    private let displayNames = Locked<[CGDirectDisplayID: String]>([:])
     private var listenerError: String?
     private let clipboard = ClipboardSync()
     private let audio = AudioChunker()
@@ -377,6 +383,7 @@ final class HostController {
             self.watchPermissions()
         }
         if options.pipeline.synthetic || HostController.hasScreenRecording { pipeline.prewarm() }
+        refreshDisplayNames()
         watchDisplayChanges()
         watchSignals()
     }
@@ -663,6 +670,8 @@ final class HostController {
             self.handle(message, from: s)
         }
         channel.send(.welcome(hostName: hostName))
+        // Its screens (after welcome, like the Windows host). Sent to everyone if they changed.
+        if !publishDisplays(), let d = lastDisplays { channel.send(.displays(d)) }
         Log.info("host: \(channel.peerName) signed in via \(channel.authMode)")
         rememberDevice(channel)
         Log.info("host: client speaks protocol v\(channel.peerVersion)\(s.supportsV2 ? " (retransmit, clipboard, shared logs)" : " (old client: no retransmit or clipboard)")")
@@ -907,6 +916,9 @@ final class HostController {
             injector.releaseAll()
         case .capsLock(let on) where s.allowsKeyboard:
             injector.setCapsLock(on)
+        // Anyone who may use the mouse or keyboard may pick the screen.
+        case .selectDisplay(let id) where s.allowsMouse || s.allowsKeyboard:
+            selectDisplay(id, by: s)
         case .updateHost(let build):
             updateRequested(build, by: s.control)
         case .setCursorInVideo(let inVideo):
@@ -977,6 +989,7 @@ final class HostController {
             guard !self.sessions.isEmpty else { return }
             self.watchdogTicks += 1
             if self.watchdogTicks % 4 == 0 { self.logStats() }
+            if self.watchdogTicks % 8 == 0 { self.publishDisplays() } // a display plugged in or out
             for s in self.sessions where Clock.nowUs() - s.lastPingUs > 3_000_000 {
                 self.endSession(s, "no heartbeat from the client for 3 s")
             }
@@ -1085,8 +1098,11 @@ final class HostController {
         queue.async {
             self.displayDebounce?.cancel()
             let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
                 Log.info("host: display configuration changed")
-                self?.pipeline.restartAll("display configuration changed")
+                self.publishDisplays() // first: the shared display may be gone
+                self.pipeline.restartAll("display configuration changed")
+                self.refreshDisplayNames()
             }
             self.displayDebounce = work
             self.queue.asyncAfter(deadline: .now() + 0.5, execute: work)
@@ -1095,5 +1111,93 @@ final class HostController {
 
     private func notifyChange() {
         DispatchQueue.main.async { self.onChange?() }
+    }
+
+    // MARK: Screens
+
+    /// The display being shared.
+    private var currentDisplayID: CGDirectDisplayID { sharedDisplay ?? CGMainDisplayID() }
+
+    /// This Mac's displays, the main one first. A display mirroring another isn't listed (it shows the same).
+    static func activeDisplays() -> [CGDirectDisplayID] {
+        var count: UInt32 = 0
+        guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else { return [] }
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetActiveDisplayList(count, &ids, &count) == .success else { return [] }
+        let shown = ids.prefix(Int(count)).filter { CGDisplayMirrorsDisplay($0) == kCGNullDirectDisplay }
+        let main = CGMainDisplayID()
+        return shown.filter { $0 == main } + shown.filter { $0 != main }
+    }
+
+    /// The list for viewers (host queue). The synthetic test host has one pretend display.
+    private func displaysMessage() -> DisplaysMsg? {
+        if options.pipeline.synthetic {
+            return DisplaysMsg(displays: [DisplayInfo(id: "synthetic", name: "Test pattern", width: 1920, height: 1080, primary: true)],
+                               current: "synthetic")
+        }
+        let ids = HostController.activeDisplays()
+        guard !ids.isEmpty else { return nil }
+        let names = displayNames.get
+        let main = CGMainDisplayID()
+        let list = ids.enumerated().map { i, id -> DisplayInfo in
+            let mode = CGDisplayCopyDisplayMode(id)
+            return DisplayInfo(id: String(id), name: names[id] ?? "Screen \(i + 1)",
+                               width: mode?.pixelWidth ?? Int(CGDisplayPixelsWide(id)),
+                               height: mode?.pixelHeight ?? Int(CGDisplayPixelsHigh(id)), primary: id == main)
+        }
+        return DisplaysMsg(displays: list, current: String(currentDisplayID))
+    }
+
+    /// Tell every viewer about the displays if they changed (or `force`). Host queue. Returns whether it sent.
+    @discardableResult
+    private func publishDisplays(force: Bool = false) -> Bool {
+        // The shared display was unplugged: back to the main one.
+        if let shared = sharedDisplay, !options.pipeline.synthetic, !HostController.activeDisplays().contains(shared) {
+            Log.info("host: display \(shared) is gone; sharing the main display again")
+            useDisplay(nil)
+        }
+        guard let msg = displaysMessage(), force || msg != lastDisplays else { return false }
+        lastDisplays = msg
+        sessions.forEach { $0.control.send(.displays(msg)) }
+        return !sessions.isEmpty
+    }
+
+    private func useDisplay(_ id: CGDirectDisplayID?) {
+        sharedDisplay = id
+        injector.displayID = id
+        pipeline.setDisplay(id)
+    }
+
+    /// A viewer picked one of the displays. Everyone sees it: there's one capture for all.
+    private func selectDisplay(_ id: String, by s: HostSession) {
+        guard let wanted = UInt32(id), HostController.activeDisplays().contains(wanted), !options.pipeline.synthetic else {
+            Log.info("host: \(s.name) asked for display \(id), which isn't there")
+            s.control.send(.notice("\(hostName) has no such screen (any more)."))
+            publishDisplays(force: true)
+            return
+        }
+        guard wanted != currentDisplayID else { publishDisplays(force: true); return }
+        Log.info("host: \(s.name) asked for display \(id); sharing it now")
+        // Whatever was held down was pressed on the other display.
+        injector.releaseAll()
+        useDisplay(wanted)
+        publishDisplays(force: true)
+        notifyChange()
+    }
+
+    /// NSScreen's names for the displays (main thread), then tell viewers if that changed the list.
+    private func refreshDisplayNames() {
+        guard !options.pipeline.synthetic else { return }
+        DispatchQueue.main.async { [weak self] in
+            var names: [CGDirectDisplayID: String] = [:]
+            for screen in NSScreen.screens {
+                if let n = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber {
+                    names[n.uint32Value] = screen.localizedName
+                }
+            }
+            guard let self else { return }
+            self.displayNames.with { $0 = names }
+            self.queue.async { self.publishDisplays() }
+        }
     }
 }

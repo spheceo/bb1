@@ -6,8 +6,9 @@ import BB1Core
 /// like Cmd+Tab and Cmd+Space. Those need an event tap, which needs Accessibility permission for
 /// this app. Without it, normal keys still work through an in-app monitor.
 ///
-/// Two kinds of chord stay on this Mac: ⌘⎋ gives control back, and Globe-Control chords (macOS window
-/// tiling, e.g. 🌐⌃← puts the stream window on the left half) arrange windows. Everything else goes to the host.
+/// Three kinds of chord stay on this Mac: ⌘⎋ gives control back, ⌃⌥→ / ⌃⌥← show the host's next / previous
+/// screen (when it has more than one), and Globe-Control chords (macOS window tiling, e.g. 🌐⌃← puts the
+/// stream window on the left half) arrange windows. Everything else goes to the host.
 final class KeyboardCapture {
     static let escapeKey: UInt16 = 53
 
@@ -18,6 +19,9 @@ final class KeyboardCapture {
     /// Caps Lock turned on/off on this Mac (it isn't sent as a key; the host matches the state).
     var onCapsLock: ((Bool) -> Void)?
     private let onGiveBack: () -> Void
+    /// ⌃⌥→ (1) / ⌃⌥← (−1). Taken only while `canStepScreens` says the host has screens to switch between.
+    var onScreenStep: ((Int) -> Void)?
+    var canStepScreens: () -> Bool = { false }
 
     private var tap: CFMachPort?
     private var tapSource: CFRunLoopSource?
@@ -42,6 +46,10 @@ final class KeyboardCapture {
             if !self.forwardKeys() {
                 if event.type == .keyDown, self.isGiveBack(event.keyCode, CGEventFlags(rawValue: UInt64(event.modifierFlags.rawValue))) {
                     if !event.isARepeat { self.onGiveBack() }
+                    return nil
+                }
+                if event.type == .keyDown, let step = self.screenStep(event.keyCode, CGEventFlags(rawValue: UInt64(event.modifierFlags.rawValue))) {
+                    if !event.isARepeat { self.onScreenStep?(step) }
                     return nil
                 }
                 return event
@@ -140,6 +148,10 @@ final class KeyboardCapture {
                 if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 { onGiveBack() }
                 return nil
             }
+            if type == .keyDown, let step = screenStep(code, event.flags) {
+                if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 { onScreenStep?(step) }
+                return nil
+            }
             return Unmanaged.passUnretained(event)
         }
         route(code: code, type: type, flags: event.flags,
@@ -159,6 +171,13 @@ final class KeyboardCapture {
             && !flags.contains(.maskControl) && !flags.contains(.maskAlternate) && !flags.contains(.maskShift)
     }
 
+    /// ⌃⌥→ → 1, ⌃⌥← → −1 (Control and Option, no Command or Shift), when there are screens to step through.
+    private func screenStep(_ code: UInt16, _ flags: CGEventFlags) -> Int? {
+        guard code == 123 || code == 124, flags.contains(.maskControl), flags.contains(.maskAlternate),
+              !flags.contains(.maskCommand), !flags.contains(.maskShift), canStepScreens() else { return nil }
+        return code == 124 ? 1 : -1
+    }
+
     private func route(code: UInt16, type: CGEventType, flags: CGEventFlags, isRepeat: Bool) {
         switch type {
         case .keyDown:
@@ -167,6 +186,13 @@ final class KeyboardCapture {
                 if !isRepeat { onGiveBack() }
                 return
             }
+            // Its repeats and key-up stay here too (the host never saw it go down).
+            if let step = screenStep(code, flags) {
+                swallowedKeyUps.insert(code)
+                if !isRepeat { onScreenStep?(step) }
+                return
+            }
+            if isRepeat, swallowedKeyUps.contains(code) { return }
             onKey(KeyMsg(code: code, down: true, isRepeat: isRepeat))
         case .keyUp:
             if swallowedKeyUps.remove(code) != nil { return }

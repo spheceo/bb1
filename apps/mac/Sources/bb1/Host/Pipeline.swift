@@ -12,6 +12,8 @@ struct PipelineSettings {
     var showsCursor = true
     /// Bundle ids of apps whose sound isn't shared (from Settings).
     var mutedApps: Set<String> = []
+    /// The display to capture (nil: the main one). A viewer can switch it while streaming.
+    var displayID: CGDirectDisplayID?
 }
 
 struct StreamInfo {
@@ -105,7 +107,7 @@ final class StreamPipeline {
             if self.settings.synthetic {
                 size = (1920, 1080)
             } else {
-                guard let mode = CGDisplayCopyDisplayMode(CGMainDisplayID()) else { return }
+                guard let mode = CGDisplayCopyDisplayMode(self.settings.displayID ?? CGMainDisplayID()) else { return }
                 size = (mode.pixelWidth, mode.pixelHeight)
             }
             let started = Clock.nowUs()
@@ -151,6 +153,22 @@ final class StreamPipeline {
         queue.async {
             self.settings.mutedApps = ids
             self.source?.setMutedApps(ids)
+        }
+    }
+
+    /// Capture another display (nil: the main one). A running stream restarts its capture there: a new
+    /// size makes a new encoder (and stream config, new epoch), the same size just a keyframe.
+    func setDisplay(_ id: CGDirectDisplayID?) {
+        queue.async {
+            guard self.settings.displayID != id else { return }
+            self.settings.displayID = id
+            Log.info("pipeline: capturing display \(id.map(String.init) ?? "main") from now on")
+            guard self.running, !self.settings.synthetic else { return }
+            self.source?.stop()
+            self.source = nil
+            self.lastBuffer = nil
+            self.forceKeyframe = true
+            self.startCapture()
         }
     }
 
@@ -246,7 +264,8 @@ final class StreamPipeline {
         let gen = generation
         let source: FrameSource = settings.synthetic
             ? SyntheticSource(queue: queue, fps: settings.fps)
-            : ScreenSource(queue: queue, fps: settings.fps, showsCursor: settings.showsCursor, mutedApps: settings.mutedApps)
+            : ScreenSource(queue: queue, fps: settings.fps, showsCursor: settings.showsCursor, mutedApps: settings.mutedApps,
+                           displayID: settings.displayID)
         self.source = source
         source.onAudio = { [weak self] sample in
             guard let self, gen == self.generation else { return }

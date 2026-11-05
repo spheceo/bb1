@@ -3,6 +3,7 @@ pub mod client;
 pub mod crypto;
 pub mod directory;
 pub mod discovery;
+pub mod gamepad;
 pub mod host;
 pub mod keymap;
 pub mod log;

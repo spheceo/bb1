@@ -355,7 +355,7 @@ fn curl() -> Command {
     cmd
 }
 
-fn fetch(url: &str) -> Option<Vec<u8>> {
+pub(crate) fn fetch(url: &str) -> Option<Vec<u8>> {
     let out = curl()
         .args(["-fsSL", "--max-time", "20", "-H", "Accept: application/vnd.github+json", "-A", "bb1-windows", url])
         .stdout(Stdio::piped())
@@ -364,7 +364,7 @@ fn fetch(url: &str) -> Option<Vec<u8>> {
     out.status.success().then_some(out.stdout)
 }
 
-fn download(url: &str, to: &std::path::Path, size: u64, progress: impl Fn(f64)) -> Result<(), String> {
+pub(crate) fn download(url: &str, to: &std::path::Path, size: u64, progress: impl Fn(f64)) -> Result<(), String> {
     let _ = std::fs::remove_file(to);
     let mut child = curl()
         .args(["-fsSL", "--max-time", "600", "-A", "bb1-windows", "-o"])

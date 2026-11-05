@@ -1,9 +1,10 @@
 //! Headless test client: signs in to a host, receives video and checks it, then reports.
 //! Runs on any platform, so the Windows client's protocol code is tested on a Mac against a real host:
 //!   bb1-probe --host 127.0.0.1:47960 [--code-file F | --code 123456] [--seconds 6] [--out stream.h264]
+//!             [--screen '\\.\DISPLAY2']   (ask the host to share that screen, and check it did)
 
 use bb1::core::client::{Client, Events, Stats, Target, Auth};
-use bb1::core::proto::{CursorMsg, ClipboardMsg, StreamConfig};
+use bb1::core::proto::{CursorMsg, ClipboardMsg, DisplaysMsg, Msg, StreamConfig};
 use bb1::core::video::FramePayload;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
@@ -21,6 +22,7 @@ struct Probe {
     ended: Mutex<Option<String>>,
     config: Mutex<Option<StreamConfig>>,
     connected: Mutex<bool>,
+    displays: Mutex<Vec<DisplaysMsg>>,
 }
 
 impl Events for Probe {
@@ -57,6 +59,11 @@ impl Events for Probe {
     fn clipboard(&self, _c: ClipboardMsg) {}
     fn cursor(&self, c: CursorMsg) { eprintln!("cursor: {}x{} png {} bytes", c.width, c.height, c.png.len()); }
     fn stats(&self, s: &Stats) { if s.connected { eprintln!("stats: {}", s.summary()); } }
+    fn displays(&self, d: DisplaysMsg) {
+        let list: Vec<String> = d.displays.iter().map(|x| format!("{} \"{}\" {}x{}{}", x.id, x.name, x.width, x.height, if x.primary { " main" } else { "" })).collect();
+        eprintln!("displays: [{}] sharing {}", list.join(", "), d.current);
+        self.displays.lock().unwrap().push(d);
+    }
 }
 
 fn main() {
@@ -100,12 +107,31 @@ fn main() {
         out: Mutex::new(arg("--out").and_then(|p| std::fs::File::create(p).ok())),
         frames: AtomicU64::new(0), keyframes: AtomicU64::new(0), bad: AtomicU64::new(0),
         ended: Mutex::new(None), config: Mutex::new(None), connected: Mutex::new(false),
+        displays: Mutex::new(Vec::new()),
     });
+    let screen = arg("--screen");
+    // (epoch when asked, frames when asked)
+    let mut asked: Option<(i64, u64)> = None;
     let client = Client::start(target, probe.clone(), true, false);
     let _ = probe.client.set(client.clone());
+    // --gamepads (Windows): send this PC's controllers too, as if a stream window were in front.
+    #[cfg(windows)]
+    if args.iter().any(|a| a == "--gamepads") {
+        unsafe { std::env::set_var("BB1_GAMEPADS_ALWAYS", "1") };
+        bb1::win::gamepad::start(client.clone(), None);
+    }
     for _ in 0..seconds * 10 {
         std::thread::sleep(Duration::from_millis(100));
         if probe.ended.lock().unwrap().is_some() { break; }
+        // Once the stream runs and the host has listed its screens, ask for the other one.
+        if let Some(id) = &screen
+            && asked.is_none() && probe.frames.load(Relaxed) > 30 && !probe.displays.lock().unwrap().is_empty()
+        {
+            let epoch = probe.config.lock().unwrap().as_ref().map(|c| c.epoch as i64).unwrap_or(-1);
+            eprintln!("asking for screen {id} (epoch now {epoch})");
+            client.send(Msg::SelectDisplay { id: id.clone() });
+            asked = Some((epoch, probe.frames.load(Relaxed)));
+        }
     }
     let audio = client.counters().audio_packets.load(Relaxed);
     client.stop();
@@ -116,6 +142,21 @@ fn main() {
     if let Some(e) = ended.filter(|e| e != "Disconnected.") {
         println!("ended: {e}");
         std::process::exit(1);
+    }
+    if let Some(id) = &screen {
+        let lists = probe.displays.lock().unwrap().clone();
+        let epoch = config.as_ref().map(|c| c.epoch as i64).unwrap_or(-1);
+        match (asked, lists.last()) {
+            (Some((before, frames_then)), Some(last)) if last.current == *id && epoch != before && frames > frames_then => {
+                println!("OK screen {id}: sharing it now ({} lists received), epoch {before} → {epoch}, {} frames since", lists.len(), frames - frames_then);
+            }
+            (asked, last) => {
+                println!("FAIL screen {id}: asked {}, last list {:?}, epoch {epoch}", asked.is_some(), last);
+                std::process::exit(1);
+            }
+        }
+    } else if let Some(last) = probe.displays.lock().unwrap().last() {
+        println!("screens: {} (sharing {})", last.displays.len(), last.current);
     }
     if frames > 0 && probe.bad.load(Relaxed) == 0 {
         let c = config.unwrap();

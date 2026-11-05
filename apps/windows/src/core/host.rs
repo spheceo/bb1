@@ -816,7 +816,14 @@ fn stream_session(shared: &Arc<Shared>, authed: Authed, writer: (TcpStream, Stre
             Msg::MouseButton(b) if s.mouse.load(Relaxed) => shared.input.lock().unwrap().mouse_button(&b.v),
             Msg::Scroll(sc) if s.mouse.load(Relaxed) => shared.input.lock().unwrap().scroll(&sc.v),
             Msg::ReleaseAll {} => shared.input.lock().unwrap().release_all(),
-            Msg::Gamepad(g) if s.controller.load(Relaxed) => shared.input.lock().unwrap().gamepad(s.id, &g.v),
+            Msg::Gamepad(g) if s.controller.load(Relaxed) => {
+                if std::env::var_os("BB1_GAMEPAD_TRACE").is_some() {
+                    let g = &g.v;
+                    logi!("gamepad trace: {} pad {} {} buttons {:#06x} lt {} rt {} left {},{} right {},{}", s.name, g.pad,
+                          if g.connected { "on" } else { "off" }, g.buttons, g.lt, g.rt, g.lx, g.ly, g.rx, g.ry);
+                }
+                shared.input.lock().unwrap().gamepad(s.id, &g.v)
+            }
             // Anyone who may use the mouse or keyboard may pick the screen.
             Msg::SelectDisplay { id } if s.mouse.load(Relaxed) || s.keyboard.load(Relaxed) => {
                 logi!("host: {} asked for screen {id}", s.name);
@@ -953,13 +960,35 @@ fn video_loop(shared: Arc<Shared>, mut video: Box<dyn VideoBackend>, commands: R
                 }
                 VideoCommand::Bitrate(id, kbps) => video.set_bitrate(id, kbps),
                 VideoCommand::CursorInVideo(on) => video.set_cursor_in_video(on),
-                VideoCommand::SelectDisplay(id, who) => match video.select_display(&id) {
-                    Ok(()) => {
-                        logi!("capture: now sharing screen {id} (asked by {who})");
-                        publish_displays(&shared, &*video, true);
+                VideoCommand::SelectDisplay(id, who) => {
+                    let before = video.current_display();
+                    match video.select_display(&id) {
+                        Ok(()) => {
+                            if video.current_display() != before {
+                                logi!("capture: now sharing screen {id} (asked by {who})");
+                                // A new capture (maybe on another graphics card): new encoders for
+                                // everyone, a new epoch and a keyframe, whether or not the size changed.
+                                size = video.size();
+                                *shared.size.lock().unwrap() = size;
+                                for s in viewers.clone() {
+                                    video.close_viewer(s.id);
+                                    s.epoch.fetch_add(1, Relaxed);
+                                    if !open_viewer(&shared, &mut *video, &s, size, fps) {
+                                        viewers.retain(|x| x.id != s.id);
+                                    }
+                                }
+                            }
+                            publish_displays(&shared, &*video, true);
+                        }
+                        Err(e) => {
+                            logi!("capture: couldn't switch to screen {id}: {e}");
+                            let sessions = shared.sessions.lock().unwrap().clone();
+                            for s in sessions.iter().filter(|s| s.name == who) {
+                                s.send(&Msg::Notice(v(format!("{} couldn't share that screen: {e}", shared.cfg.name))));
+                            }
+                        }
                     }
-                    Err(e) => logi!("capture: couldn't switch to screen {id}: {e}"),
-                },
+                }
             }
         }
         // Screens plugged in or out, or the shared one changed: tell everyone (cheap; checked often).

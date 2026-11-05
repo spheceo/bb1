@@ -42,7 +42,7 @@ case "client":
             print("--headless needs --host and --key\n\(ClientOptions.usage)")
             exit(2)
         }
-        let headless = HeadlessClient(target: target, seconds: options.seconds)
+        let headless = HeadlessClient(target: target, seconds: options.seconds, screen: options.screen)
         headless.run()
         dispatchMain()
     }

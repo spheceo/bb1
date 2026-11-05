@@ -8,6 +8,7 @@ mod clipboard;
 mod connect;
 mod cursor;
 mod decoder;
+pub mod gamepad;
 pub(crate) mod gfx;
 mod render;
 mod stream;

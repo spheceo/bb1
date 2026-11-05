@@ -25,7 +25,8 @@ enum CaptureError: LocalizedError {
     var errorDescription: String? { "no display found to capture" }
 }
 
-/// Captures the main display with ScreenCaptureKit at native pixel resolution. The sound comes from
+/// Captures one display (the main one unless told otherwise) with ScreenCaptureKit at native pixel
+/// resolution. The sound comes from
 /// a second, audio-only stream (`SoundCapture`), so apps can be left out of the sound without
 /// leaving their windows out of the picture. Sendable because its state is only touched on `queue`.
 final class ScreenSource: NSObject, FrameSource, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
@@ -39,12 +40,15 @@ final class ScreenSource: NSObject, FrameSource, SCStreamOutput, SCStreamDelegat
     private var onFrame: ((CVPixelBuffer, UInt64) -> Void)?
     private var onStop: ((String) -> Void)?
     private let sound: SoundCapture
+    /// nil: the main display. One that's gone falls back to the main display too.
+    private let displayID: CGDirectDisplayID?
     var onAudio: ((CMSampleBuffer) -> Void)?
 
-    init(queue: DispatchQueue, fps: Int, showsCursor: Bool, mutedApps: Set<String>) {
+    init(queue: DispatchQueue, fps: Int, showsCursor: Bool, mutedApps: Set<String>, displayID: CGDirectDisplayID? = nil) {
         self.queue = queue
         self.fps = fps
         self.showsCursor = showsCursor
+        self.displayID = displayID
         sound = SoundCapture(queue: queue, mutedApps: mutedApps)
         super.init()
         sound.onAudio = { [weak self] sample in self?.onAudio?(sample) }
@@ -59,7 +63,9 @@ final class ScreenSource: NSObject, FrameSource, SCStreamOutput, SCStreamDelegat
             do {
                 let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
                 let mainID = CGMainDisplayID()
-                guard let display = content.displays.first(where: { $0.displayID == mainID }) ?? content.displays.first else {
+                let wanted = self.displayID ?? mainID
+                guard let display = content.displays.first(where: { $0.displayID == wanted })
+                        ?? content.displays.first(where: { $0.displayID == mainID }) ?? content.displays.first else {
                     throw CaptureError.noDisplay
                 }
                 let mode = CGDisplayCopyDisplayMode(display.displayID)
