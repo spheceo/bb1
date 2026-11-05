@@ -8,6 +8,7 @@ pub mod log;
 pub mod proto;
 pub mod store;
 pub mod tailscale;
+pub mod updater;
 pub mod video;
 
 use std::sync::OnceLock;

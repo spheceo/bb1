@@ -276,6 +276,10 @@ pub enum Msg {
     Cursor(V<CursorMsg>),
     CapsLock(V<bool>),
 
+    /// Client → host on an "update" connection: download and install this build, reporting UpdateStatus.
+    UpdateHost {
+        build: i64,
+    },
     UpdateStatus(V<UpdateStatusMsg>),
 
     // Screen previews, on "update" connections

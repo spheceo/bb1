@@ -81,6 +81,13 @@ Function RunUnelevated
   Exec '"$WINDIR\explorer.exe" "$INSTDIR\${APP}.exe"'
 FunctionEnd
 
+; bb1 updating itself runs this quietly (/S): open the new bb1 again when it's done.
+Function .onInstSuccess
+  ${If} ${Silent}
+    Call RunUnelevated
+  ${EndIf}
+FunctionEnd
+
 ; Ask a running copy to quit (it quits at once), then make sure it's gone,
 ; so bb1.exe can be replaced.
 !macro CloseRunning

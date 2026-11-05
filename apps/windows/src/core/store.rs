@@ -158,11 +158,13 @@ pub struct Settings {
     pub last_address: Option<String>,
     /// Lines per wheel notch.
     pub wheel_lines: f64,
+    /// Update channel: nightlies (true) or releases only.
+    pub nightly: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { modifier_layout: "standard".into(), sound: true, clipboard: true, last_address: None, wheel_lines: 3.0 }
+        Settings { modifier_layout: "standard".into(), sound: true, clipboard: true, last_address: None, wheel_lines: 3.0, nightly: true }
     }
 }
 

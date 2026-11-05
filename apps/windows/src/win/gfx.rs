@@ -365,7 +365,7 @@ impl Gfx {
 }
 
 /// The text box for a label vertically centred in `r`.
-fn text_box(r: D2D_RECT_F, font: Font) -> D2D_RECT_F {
+pub fn text_box(r: D2D_RECT_F, font: Font) -> D2D_RECT_F {
     let (size, _) = font.spec();
     let h = size * 1.4;
     let y = (r.top + r.bottom) / 2.0 - h / 2.0;

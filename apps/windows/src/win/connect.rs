@@ -5,6 +5,7 @@
 use crate::core::client::{Auth, Target};
 use crate::core::directory::{self, Directory, Entry};
 use crate::core::store::KnownHost;
+use crate::core::updater::{Pill, Updater};
 use crate::win::app::{self, UiEvent};
 use crate::win::gfx::{self, Color, Font, Gfx, contains, line_box, rect, style};
 use crate::win::util::{get_text, scale, ui_font};
@@ -19,6 +20,8 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{HSTRING, PCWSTR, w};
 
 const TIMER_TICK: usize = 1;
+/// Hides "Updated to …" a few seconds after it's been seen.
+const TIMER_DONE: usize = 2;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const FOOTER: f32 = 64.0;
 const MARGIN: f32 = 40.0;
@@ -28,6 +31,7 @@ const GAP: f32 = 20.0;
 enum Hover {
     None,
     Plus,
+    Pill,
     Tile(usize),
 }
 
@@ -43,6 +47,11 @@ struct Home {
     directory: Directory,
     hits: Vec<TileHit>,
     plus: D2D_RECT_F,
+    updater: Updater,
+    /// Where the update pill is (empty when hidden), and whether it can be clicked.
+    pill: D2D_RECT_F,
+    pill_clickable: bool,
+    done_timer: bool,
     hover: Hover,
     scroll: f32,
     message: String,
@@ -114,6 +123,7 @@ pub fn create() -> HWND {
         // The window gets events from here on (before any background thread can post one).
         app::set_event_window(hwnd);
         let directory = Directory::start(|| app::post(UiEvent::HostsChanged));
+        let updater = Updater::start(|| app::post(UiEvent::HostsChanged));
         HOME.with(|h| {
             *h.borrow_mut() = Some(Home {
                 hwnd,
@@ -121,6 +131,10 @@ pub fn create() -> HWND {
                 directory,
                 hits: Vec::new(),
                 plus: rect(0.0, 0.0, 0.0, 0.0),
+                updater,
+                pill: rect(0.0, 0.0, 0.0, 0.0),
+                pill_clickable: false,
+                done_timer: false,
                 hover: Hover::None,
                 scroll: 0.0,
                 message: String::new(),
@@ -157,6 +171,9 @@ pub fn show(message: &str) {
     }) else { return };
     dir.set_active(true);
     dir.refresh_now();
+    if let Some(u) = with(|h| h.updater.clone()) {
+        u.check_soon();
+    }
     unsafe {
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetForegroundWindow(hwnd);
@@ -217,9 +234,66 @@ fn paint(h: &mut Home) {
     g.line(px - 7.0, py, px + 7.0, py, Color::white(plus_alpha), 2.0);
     g.line(px, py - 7.0, px, py + 7.0, Color::white(plus_alpha), 2.0);
 
+    // The update pill, top right, like the Mac's: offers a newer build, then shows progress inside itself.
+    let behind: Vec<String> = macs_behind(&h.directory, &h.updater).into_iter().map(|(t, _)| t.label).collect();
+    let pill = h.updater.pill(&behind);
+    let hovering = h.hover == Hover::Pill;
+    let (label, kind) = match &pill {
+        Pill::Hidden => (String::new(), 0),
+        Pill::Offer { label, .. } => (label.clone(), 1),
+        Pill::Busy { label, .. } => (label.clone(), 2),
+        Pill::Done(label) => (label.clone(), 3),
+        Pill::Failed(_) => ("Update failed · Try again".to_string(), 4),
+    };
+    h.pill_clickable = matches!(pill, Pill::Offer { .. } | Pill::Failed(_));
+    if kind == 0 {
+        h.pill = rect(0.0, 0.0, 0.0, 0.0);
+    } else {
+        let (ph, cy) = (30.0, title_y + 23.0);
+        let pw = g.measure(&label, Font::Button) + 28.0;
+        let r = rect(width - MARGIN - pw, cy - ph / 2.0, pw, ph);
+        h.pill = r;
+        let radius = ph / 2.0;
+        match &pill {
+            Pill::Offer { .. } => {
+                g.fill_round(r, radius, Color::white(if hovering { 0.84 } else { 0.95 }));
+                g.text_centered(&label, Font::Button, gfx::text_box(r, Font::Button), style::ink());
+            }
+            Pill::Busy { progress, .. } => {
+                g.fill_round(r, radius, Color::white(0.05));
+                g.push_round_clip(r, radius);
+                g.fill_rect(D2D_RECT_F { right: r.left + (r.right - r.left) * progress.clamp(0.0, 1.0) as f32, ..r }, Color::white(0.14));
+                g.pop_clip();
+                g.stroke_round(r, radius, Color::white(0.16), 1.0);
+                g.text_centered(&label, Font::Button, gfx::text_box(r, Font::Button), style::label());
+            }
+            Pill::Done(_) => {
+                g.fill_round(r, radius, Color::white(0.05));
+                g.stroke_round(r, radius, style::online(), 1.0);
+                g.text_centered(&label, Font::Button, gfx::text_box(r, Font::Button), style::online());
+                if !h.done_timer {
+                    h.done_timer = true;
+                    unsafe {
+                        SetTimer(Some(h.hwnd), TIMER_DONE, 6_000, None);
+                    }
+                }
+            }
+            _ => {
+                g.fill_round(r, radius, Color::white(if hovering { 0.1 } else { 0.05 }));
+                g.stroke_round(r, radius, Color(1.0, 0.45, 0.4, 0.8), 1.0);
+                g.text_centered(&label, Font::Button, gfx::text_box(r, Font::Button), style::label());
+            }
+        }
+    }
+
     let entries = h.directory.entries();
     let grid_top = title_y + 44.0 + 24.0;
-    let message_h = if h.message.is_empty() { 0.0 } else { 34.0 };
+    // A failed update says why down here, unless something more recent is being said.
+    let note = match (&pill, h.message.is_empty()) {
+        (Pill::Failed(why), true) => why.clone(),
+        _ => h.message.clone(),
+    };
+    let message_h = if note.is_empty() { 0.0 } else { 34.0 };
     let grid = rect(MARGIN, grid_top, (width - 2.0 * MARGIN).max(100.0), (height - grid_top - message_h).max(50.0));
     h.hits.clear();
 
@@ -256,8 +330,8 @@ fn paint(h: &mut Home) {
         g.pop_rect_clip();
     }
 
-    if !h.message.is_empty() {
-        g.text(&h.message, Font::Small, line_box(MARGIN, height - 28.0, width - 2.0 * MARGIN, Font::Small), Color::white(0.6));
+    if !note.is_empty() {
+        g.text(&note, Font::Small, line_box(MARGIN, height - 28.0, width - 2.0 * MARGIN, Font::Small), Color::white(0.6));
     }
     g.end();
 }
@@ -304,6 +378,9 @@ fn draw_tile(g: &mut Gfx, r: D2D_RECT_F, m: &Model, preview: Option<&directory::
 fn hit(h: &Home, x: f32, y: f32) -> Hover {
     if contains(&h.plus, x, y) {
         return Hover::Plus;
+    }
+    if contains(&h.pill, x, y) {
+        return Hover::Pill;
     }
     h.hits.iter().position(|t| contains(&t.rect, x, y)).map(Hover::Tile).unwrap_or(Hover::None)
 }
@@ -398,6 +475,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             if (lparam.0 & 0xFFFF) as u32 == HTCLIENT {
                 let hand = with(|h| match h.hover {
                     Hover::Plus => true,
+                    Hover::Pill => h.pill_clickable,
                     Hover::Tile(i) => h.hits.get(i).is_some_and(|t| t.can_act),
                     Hover::None => false,
                 })
@@ -411,10 +489,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_LBUTTONUP => {
             let (x, y) = dips(hwnd, lparam);
+            if with(|h| hit(h, x, y) == Hover::Pill && h.pill_clickable).unwrap_or(false) {
+                start_update();
+                return LRESULT(0);
+            }
             let target = with(|h| match hit(h, x, y) {
                 Hover::Plus => Some(None),
                 Hover::Tile(i) => h.hits.get(i).filter(|t| t.can_act).map(|t| Some(t.entry.clone())),
-                Hover::None => None,
+                Hover::None | Hover::Pill => None,
             })
             .flatten();
             match target {
@@ -444,6 +526,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_TIMER if wparam.0 == TIMER_TICK => {
             invalidate(); // "seen 5 min ago" moves on
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == TIMER_DONE => {
+            unsafe {
+                let _ = KillTimer(Some(hwnd), TIMER_DONE);
+            }
+            if let Some(u) = with(|h| h.updater.clone()) {
+                u.dismiss_done();
+            }
             LRESULT(0)
         }
         WM_DPICHANGED => {
@@ -711,5 +802,56 @@ unsafe extern "system" fn prompt_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
             LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+    }
+}
+
+/// Online Macs that sign in quietly and run an older build than the newest release (with their build).
+fn macs_behind(dir: &Directory, updater: &Updater) -> Vec<(Target, i64)> {
+    let Some(latest) = updater.latest() else { return Vec::new() };
+    dir.entries()
+        .into_iter()
+        .filter(|e| e.online && e.quiet)
+        .filter_map(|e| {
+            // Builds from before self-update report 0; they're updated by hand once.
+            let build = dir.build(&e.name).filter(|&b| b > 0 && b < latest.build)?;
+            let target = Target::new(e.address.as_deref()?, &e.name);
+            (!matches!(target.auth, Auth::Code)).then_some((target, build))
+        })
+        .collect()
+}
+
+/// The pill was clicked: update the Macs that are behind, then this PC.
+fn start_update() {
+    let Some((dir, updater)) = with(|h| (h.directory.clone(), h.updater.clone())) else { return };
+    let macs = macs_behind(&dir, &updater);
+    set_status("");
+    updater.update(macs, |installer| {
+        let r = launch_installer(installer);
+        if r.is_ok() {
+            // The installer closes bb1 too; quit first so it doesn't have to.
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            std::process::exit(0);
+        }
+        r
+    });
+    invalidate();
+}
+
+/// Run the installer quietly; it asks for admin, then opens the new bb1 when it's done.
+fn launch_installer(path: &std::path::Path) -> Result<(), String> {
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let file = HSTRING::from(path.as_os_str());
+        let r = ShellExecuteW(None, w!("runas"), &file, w!("/S"), None, SW_SHOWNORMAL);
+        let code = r.0 as isize;
+        if code > 32 {
+            Ok(())
+        } else if code == 5 || code == 1223 {
+            Err("The update needs your OK to install. Try again.".into())
+        } else {
+            Err(format!("Couldn't start the installer (error {code})"))
+        }
     }
 }

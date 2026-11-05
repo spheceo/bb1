@@ -15,6 +15,8 @@ In the stream window:
 - **Right-click the title bar** for: full screen, which PC key is ⌘ (Windows key, Alt for Mac key positions, or Ctrl so Ctrl+C copies), sound, clipboard sharing, refresh picture, disconnect.
 - The title bar shows frame rate, bitrate, round trip and how far behind the picture is.
 
+**Updates:** when a newer nightly is on GitHub, Your Macs shows **Update to nightly-N** at the top right. It updates your Macs that are behind, then this PC (Windows asks once for admin), and bb1 opens again as the new build. `"nightly": false` in `%APPDATA%\bb1\settings.json` sticks to releases.
+
 Logs: `%LOCALAPPDATA%\bb1\Logs\client.log`. While connected, every line also goes to the Mac's log (`~/Library/Logs/bb1/host.log`, prefixed `[windows]`). Pairings and settings: `%APPDATA%\bb1`.
 
 ## How it's built
@@ -53,6 +55,5 @@ GitHub Actions builds `bb1.exe` and `bb1-setup.exe` on Windows when this folder 
 
 ## Not yet
 
-- Self-update (run a newer `bb1-setup.exe` for now).
 - Signing: unsigned on purpose for now (see the "Run anyway" step above).
 - Macs with a screen wider than 4096 pixels: Windows' H.264 decoder stops at 4096×2304.
