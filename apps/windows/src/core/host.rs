@@ -250,6 +250,12 @@ struct Session {
     rate: Mutex<RateState>,
     /// Bytes per second for bursts (pacing).
     pace: AtomicU64,
+    /// Video packets sent in the last second (for the resend budget).
+    pps: AtomicU64,
+    /// Resends allowed right now (a token bucket refilled with ~30% of the stream), and when it was refilled.
+    resend_tokens: Mutex<(f64, Instant)>,
+    /// Resends skipped since the last stats line: over budget, or for a frame too old to help.
+    resends_skipped: AtomicU64,
     baseline: Mutex<(u64, u64, u64, u64)>,
     epoch: AtomicU32,
 }
@@ -298,6 +304,8 @@ struct Shared {
     size: Mutex<(u32, u32)>,
     stopped: AtomicBool,
     own_login: Mutex<Option<(String, Instant)>>,
+    /// Each computer's last quality (share of full bitrate) when it left, by device ID.
+    last_rates: Mutex<HashMap<String, (f64, Instant)>>,
     /// Announces this host on the home network (Bonjour), like the Mac host.
     bonjour: Option<mdns_sd::ServiceDaemon>,
     /// Who may sign in (changeable while sharing).
@@ -339,6 +347,7 @@ impl Host {
             allow_tailscale: AtomicBool::new(cfg.allow_tailscale),
             allow_pairing: AtomicBool::new(cfg.allow_pairing),
             displays: Mutex::new(None),
+            last_rates: Mutex::new(HashMap::new()),
         });
         // Rumble from the virtual controllers goes back to the viewer that owns them.
         {
@@ -796,7 +805,12 @@ fn stream_session(shared: &Arc<Shared>, authed: Authed, writer: (TcpStream, Stre
         frames: tx,
         counters: Counters { sent: AtomicU64::new(0), sent_bytes: AtomicU64::new(0), encoded: AtomicU64::new(0), nacks: AtomicU64::new(0), resent: AtomicU64::new(0),
                              keys: AtomicU64::new(0), mouse: AtomicU64::new(0), pads: AtomicU64::new(0), pads_blocked: AtomicU64::new(0), rumble: AtomicU64::new(0) },
-        rate: Mutex::new(RateState { rate: 1.0, clean_seconds: 0 }),
+        // A computer that just reconnected starts where its last connection left off (for a minute):
+        // starting it at full quality in the middle of the congestion that dropped it made things worse.
+        rate: Mutex::new(RateState { rate: remembered_rate(shared, &peer_id), clean_seconds: 0 }),
+        pps: AtomicU64::new(0),
+        resend_tokens: Mutex::new((60.0, Instant::now())),
+        resends_skipped: AtomicU64::new(0),
         pace: AtomicU64::new(pace_for(bitrate as f64)),
         baseline: Mutex::new((0, 0, 0, 0)),
         epoch: AtomicU32::new(1),
@@ -948,6 +962,10 @@ fn end_session(shared: &Shared, s: &Arc<Session>, reason: &str, bye: Option<&str
         }
     }
     logi!("host: session {} with {} ended: {reason}", s.id, s.name);
+    if !s.peer_id.is_empty() {
+        let rate = s.rate.lock().unwrap().rate;
+        shared.last_rates.lock().unwrap().insert(s.peer_id.clone(), (rate, Instant::now()));
+    }
     if let Some(bye) = bye {
         s.send(&Msg::Bye(v(bye.to_string())));
         std::thread::sleep(Duration::from_millis(150));
@@ -1253,20 +1271,55 @@ fn sender(shared: Arc<Shared>, s: Arc<Session>, frames: Receiver<Arc<Vec<Vec<u8>
     }
 }
 
+/// The quality a computer had when it last left, if that was under a minute ago.
+fn remembered_rate(shared: &Shared, peer_id: &str) -> f64 {
+    if peer_id.is_empty() {
+        return 1.0;
+    }
+    match shared.last_rates.lock().unwrap().get(peer_id) {
+        Some((rate, at)) if at.elapsed() < Duration::from_secs(60) => {
+            if *rate < 1.0 {
+                logi!("host: starting this computer at {:.0}% of full quality, where its last connection left off", rate * 100.0);
+            }
+            *rate
+        }
+        _ => 1.0,
+    }
+}
+
+/// Resend packets the viewer says it didn't get, within a budget. On a connection that's suddenly
+/// slow (the viewer's line queuing up), every late frame looks lost; resending them all doubled the
+/// traffic into that queue (2026-11-05: 560 resent packets a second on a 450-a-second stream, then the
+/// connection dropped). So: at most ~30% on top of the stream, and nothing older than 0.6 s.
 fn resend(shared: &Shared, s: &Session, n: &NackMsg) {
     s.counters.nacks.fetch_add(1, Relaxed);
     let Some(peer) = *s.udp_peer.lock().unwrap() else { return };
-    let Some((_, packets)) = s.recent.lock().unwrap().get(&n.frame_id).cloned() else { return };
+    let Some((sent_us, packets)) = s.recent.lock().unwrap().get(&n.frame_id).cloned() else { return };
     let indices: Vec<usize> = match &n.indices {
-        Some(list) => list.iter().map(|&i| i as usize).collect(),
+        Some(list) => list.iter().map(|&i| i as usize).filter(|&i| i < packets.len()).collect(),
         None => (0..packets.len()).collect(),
     };
-    let mut count = 0;
-    for i in indices.into_iter().filter(|&i| i < packets.len()) {
-        let _ = shared.udp.send_to(&packets[i], peer);
-        count += 1;
+    if now_us().saturating_sub(sent_us) > 600_000 {
+        s.resends_skipped.fetch_add(indices.len() as u64, Relaxed);
+        return;
     }
-    s.counters.resent.fetch_add(count, Relaxed);
+    {
+        let per_second = (s.pps.load(Relaxed) as f64 * 0.3).max(60.0);
+        let mut b = s.resend_tokens.lock().unwrap();
+        let elapsed = b.1.elapsed().as_secs_f64();
+        b.0 = (b.0 + elapsed * per_second).min(per_second);
+        b.1 = Instant::now();
+        if b.0 < indices.len() as f64 {
+            drop(b);
+            s.resends_skipped.fetch_add(indices.len() as u64, Relaxed);
+            return;
+        }
+        b.0 -= indices.len() as f64;
+    }
+    for &i in &indices {
+        let _ = shared.udp.send_to(&packets[i], peer);
+    }
+    s.counters.resent.fetch_add(indices.len() as u64, Relaxed);
 }
 
 // MARK: Health
@@ -1311,7 +1364,15 @@ fn log_stats(shared: &Shared, sessions: &[Arc<Session>]) {
             line.push_str(&format!(" · rumble {rumble}"));
         }
         lines.push(line);
-        adapt_rate(shared, s, bytes / 1200, resent);
+        s.pps.store(bytes / 1200, Relaxed);
+        let skipped = s.resends_skipped.swap(0, Relaxed);
+        if skipped > 0 {
+            if let Some(last) = lines.last_mut() {
+                last.push_str(&format!(" · {skipped} resends skipped (late or over budget)"));
+            }
+        }
+        // Skipped resends were asked for too: they count as loss for the bitrate.
+        adapt_rate(shared, s, bytes / 1200, resent + skipped);
     }
     logi!("stats: captured {captured} fps · encode avg {:.1} max {:.1} ms · {}",
           if count > 0 { total as f64 / count as f64 / 1000.0 } else { 0.0 }, max as f64 / 1000.0, lines.join(" · "));
