@@ -256,8 +256,20 @@ struct Session {
     resend_tokens: Mutex<(f64, Instant)>,
     /// Resends skipped since the last stats line: over budget, or for a frame too old to help.
     resends_skipped: AtomicU64,
+    /// The viewer's round trips (from its pings), to notice its line backing up before frames are late.
+    delay: Mutex<DelayState>,
     baseline: Mutex<(u64, u64, u64, u64)>,
     epoch: AtomicU32,
+}
+
+#[derive(Default)]
+struct DelayState {
+    /// (when, round trip ms), the last 30 s: the lowest is this connection's normal round trip.
+    samples: VecDeque<(Instant, f64)>,
+    /// Pings in a row with the round trip well above normal.
+    high: u32,
+    /// When the bitrate was last cut for it (at most one cut a second; no climbing back for 3 s after).
+    last_cut: Option<Instant>,
 }
 
 #[derive(Clone, Copy)]
@@ -811,6 +823,7 @@ fn stream_session(shared: &Arc<Shared>, authed: Authed, writer: (TcpStream, Stre
         pps: AtomicU64::new(0),
         resend_tokens: Mutex::new((60.0, Instant::now())),
         resends_skipped: AtomicU64::new(0),
+        delay: Mutex::new(DelayState::default()),
         pace: AtomicU64::new(pace_for(bitrate as f64)),
         baseline: Mutex::new((0, 0, 0, 0)),
         epoch: AtomicU32::new(1),
@@ -868,6 +881,9 @@ fn stream_session(shared: &Arc<Shared>, authed: Authed, writer: (TcpStream, Stre
         match msg {
             Msg::Ping(p) => {
                 s.last_ping_us.store(now_us(), Relaxed);
+                if let Some(rtt) = p.v.rtt_ms {
+                    note_rtt(shared, &s, rtt);
+                }
                 s.send(&pong(shared, &p.v, s.counters.encoded.load(Relaxed), s.counters.sent.load(Relaxed)));
             }
             Msg::RequestKeyframe { reason } => {
@@ -1391,7 +1407,9 @@ fn adapt_rate(shared: &Shared, s: &Arc<Session>, packets: u64, resent: u64) {
         r.rate = (r.rate * 0.7).max(0.15);
         r.clean_seconds = 0;
     } else {
-        r.clean_seconds += 1;
+        // Not clean while the viewer's line was backing up in the last 3 s.
+        let backing_up = s.delay.lock().unwrap().last_cut.is_some_and(|t| t.elapsed() < Duration::from_secs(3));
+        r.clean_seconds = if backing_up { 0 } else { r.clean_seconds + 1 };
         // Climb back sooner: after 2 clean seconds, a quarter more each clean second.
         if r.clean_seconds >= 2 && r.rate < 1.0 {
             r.rate = (r.rate * 1.25).min(1.0);
@@ -1400,6 +1418,42 @@ fn adapt_rate(shared: &Shared, s: &Arc<Session>, packets: u64, resent: u64) {
     s.rate.lock().unwrap().clean_seconds = r.clean_seconds;
     if r.rate != old {
         set_rate(shared, s, r.rate, &if r.rate < old { format!("{resent} packets resent") } else { "no loss".into() });
+    }
+}
+
+/// The viewer's round trip, four times a second. When it climbs well above this connection's normal
+/// (the lowest in the last 30 s), the viewer's line is queuing up: lower the bitrate now, before
+/// frames arrive late and the picture freezes. Loss only shows up after the queue is full.
+fn note_rtt(shared: &Shared, s: &Arc<Session>, rtt: f64) {
+    let cut = {
+        let mut d = s.delay.lock().unwrap();
+        let now = Instant::now();
+        d.samples.push_back((now, rtt));
+        while d.samples.front().is_some_and(|(t, _)| now.duration_since(*t) > Duration::from_secs(30)) {
+            d.samples.pop_front();
+        }
+        let normal = d.samples.iter().map(|(_, r)| *r).fold(f64::MAX, f64::min);
+        let queued = rtt - normal;
+        // Well above normal: 50 ms more, or double a slow connection's normal.
+        let threshold = normal.max(50.0);
+        if queued > threshold {
+            d.high += 1;
+        } else {
+            d.high = 0;
+        }
+        if d.high >= 2 && d.last_cut.is_none_or(|t| t.elapsed() >= Duration::from_secs(1)) {
+            d.last_cut = Some(now);
+            Some((queued > threshold * 4.0, normal, rtt))
+        } else {
+            None
+        }
+    };
+    if let Some((severe, normal, rtt)) = cut {
+        let mut r = *s.rate.lock().unwrap();
+        r.rate = (r.rate * if severe { 0.5 } else { 0.75 }).max(0.15);
+        r.clean_seconds = 0;
+        *s.rate.lock().unwrap() = r;
+        set_rate(shared, s, r.rate, &format!("round trip {rtt:.0} ms, usually {normal:.0}: the line is backing up"));
     }
 }
 

@@ -728,6 +728,8 @@ fn run_session(shared: &Arc<Shared>) -> (End, bool) {
         welcomed: false,
         ping_seq: 0,
         last_pong_us: now_us(),
+        pings_out: std::collections::VecDeque::new(),
+        last_rtt_us: 0,
         offset_samples: Vec::new(),
         history: Vec::new(),
         sent_now: 0,
@@ -796,6 +798,9 @@ struct Session {
     welcomed: bool,
     ping_seq: u32,
     last_pong_us: u64,
+    /// Pings not answered yet (seq, sent at) and the last measured round trip, for the host.
+    pings_out: std::collections::VecDeque<(u32, u64)>,
+    last_rtt_us: u64,
     offset_samples: Vec<(u64, i64)>,
     history: Vec<Sample>,
     sent_now: u64,
@@ -930,13 +935,23 @@ impl Session {
 
     fn send_ping(&mut self) {
         self.ping_seq = self.ping_seq.wrapping_add(1);
+        let now = now_us();
+        // What the host should hear about our line: the last round trip, or longer if a ping has been
+        // waiting longer than that (a line backing up delays the answers too).
+        let waiting = self.pings_out.front().map(|&(_, at)| now.saturating_sub(at)).unwrap_or(0);
+        let report = self.last_rtt_us.max(waiting);
+        self.pings_out.push_back((self.ping_seq, now));
+        while self.pings_out.len() > 40 {
+            self.pings_out.pop_front();
+        }
         let c = &self.shared.counters;
         self.send(Msg::Ping(v(PingMsg {
             seq: self.ping_seq,
-            client_us: now_us(),
+            client_us: now,
             received: c.received.load(Relaxed),
             decoded: c.decoded.load(Relaxed),
             displayed: c.displayed.load(Relaxed),
+            rtt_ms: (self.last_rtt_us > 0).then_some(report as f64 / 1000.0),
         })));
     }
 
@@ -944,6 +959,10 @@ impl Session {
         let now = now_us();
         self.last_pong_us = now;
         let rtt = now.saturating_sub(p.client_us);
+        self.last_rtt_us = rtt;
+        while self.pings_out.front().is_some_and(|&(seq, _)| seq.wrapping_sub(p.seq) as i32 <= 0) {
+            self.pings_out.pop_front();
+        }
         let old = self.shared.rtt_us.load(Relaxed);
         let new = if old == 0 { rtt } else { (old as f64 * 0.8 + rtt as f64 * 0.2) as u64 };
         self.shared.rtt_us.store(new, Relaxed);

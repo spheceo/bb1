@@ -137,6 +137,11 @@ pub struct PingMsg {
     pub received: u64,
     pub decoded: u64,
     pub displayed: u64,
+    /// The client's latest round trip in ms, or how long its oldest unanswered ping has waited if that's
+    /// longer. A host uses it to notice the client's line backing up before frames arrive late.
+    /// (Older peers leave it out or ignore it.)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub rtt_ms: Option<f64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

@@ -116,6 +116,9 @@ final class ClientConnection {
     private var connectStartedUs: UInt64 = 0
     private var pingSeq: UInt32 = 0
     private var lastPongUs: UInt64 = 0
+    /// Pings not answered yet (seq, sent at) and the last measured round trip, reported to the host.
+    private var pingsOut: [(seq: UInt32, us: UInt64)] = []
+    private var lastRttUs: UInt64 = 0
     private var lastPong: PongMsg?
     private var rttUs: Double = 0
     private var offsetSamples: [(rtt: UInt64, offset: Int64)] = []
@@ -598,9 +601,16 @@ final class ClientConnection {
     private func sendPing() {
         guard keys != nil else { return }
         pingSeq &+= 1
+        let now = Clock.nowUs()
+        // The last round trip, or longer if a ping has been waiting longer (a backed-up line delays answers too).
+        let waiting = pingsOut.first.map { now > $0.us ? now - $0.us : 0 } ?? 0
+        let report = max(lastRttUs, waiting)
+        pingsOut.append((pingSeq, now))
+        if pingsOut.count > 40 { pingsOut.removeFirst(pingsOut.count - 40) }
         let c = counters.get
-        control?.send(.ping(PingMsg(seq: pingSeq, clientUs: Clock.nowUs(), received: c.received,
-                                    decoded: decoder.decoded.get, displayed: c.displayed)))
+        control?.send(.ping(PingMsg(seq: pingSeq, clientUs: now, received: c.received,
+                                    decoded: decoder.decoded.get, displayed: c.displayed,
+                                    rttMs: lastRttUs > 0 ? Double(report) / 1000 : nil)))
     }
 
     private func handlePong(_ p: PongMsg) {
@@ -608,6 +618,8 @@ final class ClientConnection {
         lastPongUs = now
         lastPong = p
         let rtt = now > p.clientUs ? now - p.clientUs : 0
+        lastRttUs = rtt
+        pingsOut.removeAll { Int32(bitPattern: $0.seq &- p.seq) <= 0 }
         rttUs = rttUs == 0 ? Double(rtt) : rttUs * 0.8 + Double(rtt) * 0.2
         // Clock offset from the lowest-RTT sample among recent ones (least queueing noise).
         offsetSamples.append((rtt, Int64(p.hostUs) - Int64(p.clientUs + rtt / 2)))

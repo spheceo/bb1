@@ -31,6 +31,7 @@
     "{\"streamConfig\":{\"_0\":{\"bitrateMbps\":30,\"codec\":1,\"epoch\":2,\"fps\":60,\"height\":1080,\"lowLatencyEncoder\":true,\"sessionId\":5,\"udpPort\":47801,\"width\":1920}}}",
     "{\"requestKeyframe\":{\"reason\":\"lost\"}}",
     "{\"ping\":{\"_0\":{\"clientUs\":2,\"decoded\":4,\"displayed\":5,\"received\":3,\"seq\":1}}}",
+    "{\"ping\":{\"_0\":{\"clientUs\":3,\"decoded\":5,\"displayed\":6,\"received\":4,\"rttMs\":14.5,\"seq\":2}}}",
     "{\"pong\":{\"_0\":{\"captured\":4,\"clientUs\":2,\"encodeAvgUs\":7,\"encoded\":5,\"hostRecoveries\":8,\"hostUs\":3,\"sent\":6,\"seq\":1}}}",
     "{\"key\":{\"_0\":{\"code\":55,\"down\":true,\"isRepeat\":false}}}",
     "{\"mouseMove\":{\"_0\":{\"x\":0.25,\"y\":0.75}}}",

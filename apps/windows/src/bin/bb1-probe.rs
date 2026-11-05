@@ -75,7 +75,7 @@ fn main() {
         // The Macs list's side connection: sign in quietly, ask for a picture and a ping.
         let target = Target::new(&host, "");
         let mut ch = bb1::core::client::SideChannel::open(&target, Duration::from_secs(3)).unwrap_or_else(|e| { println!("FAIL {e}"); std::process::exit(1) });
-        ch.send(&bb1::core::proto::Msg::Ping(bb1::core::proto::v(bb1::core::proto::PingMsg { seq: 1, client_us: bb1::core::now_us(), received: 0, decoded: 0, displayed: 0 }))).unwrap();
+        ch.send(&bb1::core::proto::Msg::Ping(bb1::core::proto::v(bb1::core::proto::PingMsg { seq: 1, client_us: bb1::core::now_us(), received: 0, decoded: 0, displayed: 0, rtt_ms: None }))).unwrap();
         ch.send(&bb1::core::proto::Msg::RequestPreview { max_width: 960 }).unwrap();
         let (mut pong, mut preview) = (None, None);
         let until = std::time::Instant::now() + Duration::from_secs(5);

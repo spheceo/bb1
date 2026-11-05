@@ -42,7 +42,7 @@ The client assembles a frame once all `packet_count` packets arrive. If a frame 
 | `KEY` | client → host | Key code, down/up, modifier state |
 | `MOUSE_BUTTON` | client → host | Button, down/up, position |
 | `RECOVER` | client → host | "I lost frame N." Host sends a keyframe (or later, a recovery frame from a long-term reference) |
-| `PING` / `PONG` | both | Every 250 ms. Round-trip time, clock offset, heartbeat, and frame counters for stall detection: host `captured`/`encoded`/`sent`, client `received`/`decoded`/`displayed` (see [04](04-reliability.md)) |
+| `PING` / `PONG` | both | Every 250 ms. Round-trip time, clock offset, heartbeat, and frame counters for stall detection: host `captured`/`encoded`/`sent`, client `received`/`decoded`/`displayed` (see [04](04-reliability.md)). The client's ping also carries `rttMs`: its last round trip, or how long its oldest unanswered ping has waited if longer; a Windows host lowers that viewer's bitrate when it climbs well above the connection's normal (its line is backing up), before frames arrive late |
 | `STATS` | client → host | Loss, decode time, display time; used for bitrate decisions |
 | `CLIPBOARD` | both | Later |
 | `BYE` | both | Clean disconnect |

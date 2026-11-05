@@ -148,6 +148,7 @@ func writeVectors(to url: URL) throws {
                                    lowLatencyEncoder: true, udpPort: 47801, sessionId: 5, epoch: 2)),
         .requestKeyframe(reason: "lost"),
         .ping(PingMsg(seq: 1, clientUs: 2, received: 3, decoded: 4, displayed: 5)),
+        .ping(PingMsg(seq: 2, clientUs: 3, received: 4, decoded: 5, displayed: 6, rttMs: 14.5)),
         .pong(PongMsg(seq: 1, clientUs: 2, hostUs: 3, captured: 4, encoded: 5, sent: 6, encodeAvgUs: 7, hostRecoveries: 8)),
         .key(KeyMsg(code: 55, down: true, isRepeat: false)),
         .mouseMove(MouseMoveMsg(x: 0.25, y: 0.75)),

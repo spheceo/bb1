@@ -371,7 +371,7 @@ impl Directory {
         let mut answers_pings = false;
         while !stop.load(Relaxed) {
             seq = seq.wrapping_add(1);
-            ch.send(&Msg::Ping(v(PingMsg { seq, client_us: now_us(), received: 0, decoded: 0, displayed: 0 })))?;
+            ch.send(&Msg::Ping(v(PingMsg { seq, client_us: now_us(), received: 0, decoded: 0, displayed: 0, rtt_ms: None })))?;
             ch.send(&Msg::RequestPreview { max_width: PREVIEW_WIDTH })?;
             sent_at = if answers_pings { sent_at } else { Instant::now() };
             let deadline = Instant::now() + PREVIEW_EVERY;

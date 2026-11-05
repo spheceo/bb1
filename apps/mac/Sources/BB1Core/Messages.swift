@@ -99,10 +99,13 @@ public struct PingMsg: Codable {
     public var received: UInt64
     public var decoded: UInt64
     public var displayed: UInt64
+    /// The client's latest round trip in ms, or how long its oldest unanswered ping has waited if that's
+    /// longer. A host uses it to notice the client's line backing up early. Older peers leave it out.
+    public var rttMs: Double?
 
-    public init(seq: UInt32, clientUs: UInt64, received: UInt64, decoded: UInt64, displayed: UInt64) {
+    public init(seq: UInt32, clientUs: UInt64, received: UInt64, decoded: UInt64, displayed: UInt64, rttMs: Double? = nil) {
         self.seq = seq; self.clientUs = clientUs
-        self.received = received; self.decoded = decoded; self.displayed = displayed
+        self.received = received; self.decoded = decoded; self.displayed = displayed; self.rttMs = rttMs
     }
 }
 
