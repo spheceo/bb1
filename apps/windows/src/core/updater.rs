@@ -73,6 +73,8 @@ struct State {
     last_check: Option<Instant>,
     checking: bool,
     just_updated: Option<JustUpdated>,
+    /// Builds Macs reported while being updated (newer than what the list last saw).
+    mac_builds: std::collections::HashMap<String, i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -201,6 +203,11 @@ impl Updater {
         Pill::Hidden
     }
 
+    /// The build a Mac said it runs when it came back from an update, if any.
+    pub fn known_build(&self, name: &str) -> Option<i64> {
+        self.state.lock().unwrap().mac_builds.get(name).copied()
+    }
+
     pub fn busy(&self) -> bool {
         matches!(self.state.lock().unwrap().phase, Some(Phase::UpdatingMacs(..) | Phase::Downloading(_) | Phase::Installing))
     }
@@ -238,10 +245,13 @@ impl Updater {
                                 me.set(Phase::UpdatingMacs(names.clone(), all));
                             };
                             let r = update_mac(&target, build, &report);
-                            if let Err(e) = &r {
-                                logi!("update: {}: {e}", target.label);
+                            match &r {
+                                Ok(now) => {
+                                    me.state.lock().unwrap().mac_builds.insert(target.label.clone(), *now);
+                                }
+                                Err(e) => logi!("update: {}: {e}", target.label),
                             }
-                            r.map_err(|e| format!("{}: {e}", target.label))
+                            r.map(|_| ()).map_err(|e| format!("{}: {e}", target.label))
                         })
                     })
                     .collect();
@@ -279,12 +289,13 @@ impl Updater {
 }
 
 /// Ask one Mac to update itself, follow along, then wait until it's back on the new build.
-fn update_mac(target: &Target, build: i64, report: &dyn Fn(f64)) -> Result<(), String> {
+/// Returns the build it runs now.
+fn update_mac(target: &Target, build: i64, report: &dyn Fn(f64)) -> Result<i64, String> {
     logi!("update: asking {} to update to build {build}", target.label);
     let mut ch = SideChannel::open(target, Duration::from_secs(4))?;
     if ch.host_build >= build {
         report(1.0);
-        return Ok(());
+        return Ok(ch.host_build);
     }
     ch.send(&Msg::UpdateHost { build })?;
     let deadline = Instant::now() + Duration::from_secs(600);
@@ -299,7 +310,7 @@ fn update_mac(target: &Target, build: i64, report: &dyn Fn(f64)) -> Result<(), S
                 "restarting" => report(0.9),
                 "upToDate" => {
                     report(1.0);
-                    return Ok(());
+                    return Ok(build);
                 }
                 _ => return Err(s.v.detail.unwrap_or_else(|| "the update failed".into())),
             },
@@ -315,7 +326,7 @@ fn update_mac(target: &Target, build: i64, report: &dyn Fn(f64)) -> Result<(), S
             if ch.host_build >= build {
                 logi!("update: {} is back on build {}", target.label, ch.host_build);
                 report(1.0);
-                return Ok(());
+                return Ok(ch.host_build);
             }
         }
     }

@@ -166,6 +166,13 @@ func writeVectors(to url: URL) throws {
         .paired(PairedMsg(hostId: "HOST-1", hostName: "kenobi", secret: secret)),
         .cursor(CursorMsg(png: Data([1]), width: 16.5, height: 24.5, hotX: 4.5, hotY: 2.5)),
         .capsLock(true),
+        .displays(DisplaysMsg(displays: [DisplayInfo(id: "1", name: "Built-in", width: 3024, height: 1964, primary: true),
+                                         DisplayInfo(id: "2", name: "LG", width: 3440, height: 1440, primary: false)], current: "2")),
+        .selectDisplay(id: "1"),
+        .gamepad(GamepadMsg(pad: 0, connected: true, buttons: 0x1010, lt: 255, rt: 0, lx: -32768, ly: 32767, rx: 12, ry: -40,
+                            name: "DualSense Wireless Controller")),
+        .gamepad(GamepadMsg(pad: 1, connected: false, buttons: 0, lt: 0, rt: 0, lx: 0, ly: 0, rx: 0, ry: 0, name: nil)),
+        .rumble(RumbleMsg(pad: 0, large: 200, small: 30)),
     ]
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]

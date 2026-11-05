@@ -236,6 +236,52 @@ pub struct UpdateStatusMsg {
     pub detail: Option<String>,
 }
 
+/// One of the host's screens (BB1Core/Messages.swift DisplayInfo).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplayInfo {
+    pub id: String,
+    pub name: String,
+    pub width: i64,
+    pub height: i64,
+    pub primary: bool,
+}
+
+/// Host → client: its screens and which one is shared.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplaysMsg {
+    pub displays: Vec<DisplayInfo>,
+    pub current: String,
+}
+
+/// Client → host: one controller's state, Xbox layout (XInput wButtons bits; triggers 0…255;
+/// sticks −32768…32767, up and right positive). See BB1Core/Messages.swift GamepadMsg.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct GamepadMsg {
+    pub pad: i64,
+    pub connected: bool,
+    pub buttons: i64,
+    pub lt: i64,
+    pub rt: i64,
+    pub lx: i64,
+    pub ly: i64,
+    pub rx: i64,
+    pub ry: i64,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub name: Option<String>,
+}
+
+/// Host → client: rumble (motor strengths 0…255).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RumbleMsg {
+    pub pad: i64,
+    pub large: i64,
+    pub small: i64,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum Msg {
@@ -288,6 +334,15 @@ pub enum Msg {
         max_width: i64,
     },
     Preview(V<PreviewMsg>),
+
+    // Screens and game controllers (unknown messages are ignored, so older peers don't mind)
+    Displays(V<DisplaysMsg>),
+    /// Client → host: share this screen instead.
+    SelectDisplay {
+        id: String,
+    },
+    Gamepad(V<GamepadMsg>),
+    Rumble(V<RumbleMsg>),
 }
 
 impl Msg {

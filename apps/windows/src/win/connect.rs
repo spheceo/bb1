@@ -957,7 +957,8 @@ fn macs_behind(dir: &Directory, updater: &Updater) -> Vec<(Target, i64)> {
         .filter(|e| e.online && e.quiet)
         .filter_map(|e| {
             // Builds from before self-update report 0; they're updated by hand once.
-            let build = dir.build(&e.name).filter(|&b| b > 0 && b < latest.build)?;
+            // The newer of what the list saw and what the Mac said after updating.
+            let build = dir.build(&e.name).max(updater.known_build(&e.name)).filter(|&b| b > 0 && b < latest.build)?;
             let target = Target::new(e.address.as_deref()?, &e.name);
             (!matches!(target.auth, Auth::Code)).then_some((target, build))
         })

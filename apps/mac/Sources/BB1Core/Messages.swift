@@ -190,6 +190,59 @@ public struct ScrollMsg: Codable {
     }
 }
 
+/// One of the host's screens.
+public struct DisplayInfo: Codable, Equatable {
+    /// Stable for as long as the screen is connected ("69733382" on a Mac, "\\\\.\\DISPLAY3" on Windows).
+    public var id: String
+    public var name: String
+    public var width: Int
+    public var height: Int
+    public var primary: Bool
+    public init(id: String, name: String, width: Int, height: Int, primary: Bool) {
+        self.id = id; self.name = name; self.width = width; self.height = height; self.primary = primary
+    }
+}
+
+/// Host → client: the host's screens and which one is shared. Sent after welcome and when either changes.
+public struct DisplaysMsg: Codable, Equatable {
+    public var displays: [DisplayInfo]
+    public var current: String
+    public init(displays: [DisplayInfo], current: String) { self.displays = displays; self.current = current }
+}
+
+/// Client → host: one game controller's state (sent when it changes). Xbox layout, whatever the
+/// controller: `buttons` uses XInput's wButtons bits (A 0x1000, B 0x2000, X 0x4000, Y 0x8000, LB 0x100,
+/// RB 0x200, Back 0x20, Start 0x10, Guide 0x400, L3 0x40, R3 0x80, D-pad up 0x1 down 0x2 left 0x4 right 0x8).
+public struct GamepadMsg: Codable, Equatable {
+    /// The client's controller slot, 0…3. Each becomes its own virtual controller on the host.
+    public var pad: Int
+    /// false: the controller was unplugged (release its virtual one).
+    public var connected: Bool
+    public var buttons: Int
+    /// Triggers 0…255.
+    public var lt: Int
+    public var rt: Int
+    /// Sticks −32768…32767, up and right positive (XInput's convention).
+    public var lx: Int
+    public var ly: Int
+    public var rx: Int
+    public var ry: Int
+    /// "DualSense Wireless Controller", for the host's log and list.
+    public var name: String?
+    public init(pad: Int, connected: Bool, buttons: Int, lt: Int, rt: Int, lx: Int, ly: Int, rx: Int, ry: Int, name: String?) {
+        self.pad = pad; self.connected = connected; self.buttons = buttons; self.lt = lt; self.rt = rt
+        self.lx = lx; self.ly = ly; self.rx = rx; self.ry = ry; self.name = name
+    }
+}
+
+/// Host → client: the game wants this controller to rumble (motor strengths 0…255; 0, 0 = stop).
+public struct RumbleMsg: Codable, Equatable {
+    public var pad: Int
+    public var large: Int
+    public var small: Int
+    public init(pad: Int, large: Int, small: Int) { self.pad = pad; self.large = large; self.small = small }
+}
+
 public enum ControlMessage: Codable {
     // Handshake (plaintext)
     case clientHello(ClientHello)
@@ -236,4 +289,11 @@ public enum ControlMessage: Codable {
     /// Client → host: send a picture of your screen, at most this many pixels wide.
     case requestPreview(maxWidth: Int)
     case preview(PreviewMsg)
+
+    // Screens and game controllers (unknown messages are ignored, so older peers don't mind)
+    case displays(DisplaysMsg)
+    /// Client → host: share this screen instead (an id from `displays`).
+    case selectDisplay(id: String)
+    case gamepad(GamepadMsg)
+    case rumble(RumbleMsg)
 }

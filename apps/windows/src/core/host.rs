@@ -58,6 +58,22 @@ pub trait VideoBackend: Send + 'static {
     fn set_bitrate(&mut self, id: u32, kbps: u32);
     /// Mac clients draw their own pointer when they say so; most backends always draw it in.
     fn set_cursor_in_video(&mut self, _on: bool) {}
+    /// This computer's screens (empty: the backend can't switch).
+    fn displays(&self) -> Vec<DisplayInfo> {
+        Vec::new()
+    }
+    /// The id of the screen being shared.
+    fn current_display(&self) -> String {
+        String::new()
+    }
+    /// Share another screen. The size may change; the host then starts new encoders by itself.
+    fn select_display(&mut self, _id: &str) -> Result<(), String> {
+        Err("this host can't switch screens".into())
+    }
+    /// Where the shared screen is on the desktop (left, top, width, height), for the mouse.
+    fn display_rect(&self) -> Option<(i32, i32, i32, i32)> {
+        None
+    }
 }
 
 /// Keyboard and mouse into this computer. Shared by every viewer.
@@ -68,6 +84,17 @@ pub trait InputBackend: Send + 'static {
     fn scroll(&mut self, s: &ScrollMsg);
     fn set_caps_lock(&mut self, on: bool);
     fn release_all(&mut self);
+    /// The shared screen moved or changed (left, top, width, height on the desktop): mouse positions
+    /// (0…1) are on it.
+    fn set_screen(&mut self, _left: i32, _top: i32, _width: i32, _height: i32) {}
+    /// A viewer's game controller (each viewer's pads are separate virtual controllers).
+    fn gamepad(&mut self, _viewer: u32, _g: &GamepadMsg) {}
+    /// Let go of everything on this viewer's controllers (its access was turned off).
+    fn release_gamepads(&mut self, _viewer: u32) {}
+    /// The viewer left: unplug its virtual controllers.
+    fn viewer_left(&mut self, _viewer: u32) {}
+    /// Where to send rumble for a viewer's controller (set once, at start).
+    fn set_rumble_sink(&mut self, _sink: Box<dyn Fn(u32, RumbleMsg) + Send + Sync>) {}
 }
 
 /// What the host's window shows.
@@ -236,6 +263,8 @@ impl Session {
 }
 
 enum VideoCommand {
+    /// (screen id, who asked)
+    SelectDisplay(String, String),
     Open(Arc<Session>),
     Close(u32),
     Bitrate(u32, u32),
@@ -262,6 +291,8 @@ struct Shared {
     /// Who may sign in (changeable while sharing).
     allow_tailscale: AtomicBool,
     allow_pairing: AtomicBool,
+    /// The screens and which one is shared, as last sent to viewers.
+    displays: Mutex<Option<DisplaysMsg>>,
 }
 
 /// A running host. Dropping it doesn't stop it; call `stop`.
@@ -295,7 +326,19 @@ impl Host {
             bonjour: advertise(&cfg.name, cfg.control_port),
             allow_tailscale: AtomicBool::new(cfg.allow_tailscale),
             allow_pairing: AtomicBool::new(cfg.allow_pairing),
+            displays: Mutex::new(None),
         });
+        // Rumble from the virtual controllers goes back to the viewer that owns them.
+        {
+            let weak = Arc::downgrade(&shared);
+            shared.input.lock().unwrap().set_rumble_sink(Box::new(move |viewer, r| {
+                let Some(shared) = weak.upgrade() else { return };
+                let s = shared.sessions.lock().unwrap().iter().find(|s| s.id == viewer).cloned();
+                if let Some(s) = s {
+                    s.send(&Msg::Rumble(v(r)));
+                }
+            }));
+        }
         logi!("host: {} sharing a {}x{} screen on ports {} and {}", cfg.name, size.0, size.1, cfg.control_port, cfg.video_port);
 
         let s = shared.clone();
@@ -368,7 +411,12 @@ impl Host {
         }
         logi!("host: {} for {} {}", what.label(), s.name, if on { "allowed" } else { "turned off" });
         if !on {
-            self.shared.input.lock().unwrap().release_all();
+            let mut input = self.shared.input.lock().unwrap();
+            if what == Access::Controller {
+                input.release_gamepads(id);
+            } else {
+                input.release_all();
+            }
         }
         let host = &self.shared.cfg.name;
         s.send(&Msg::Notice(v(if on {
@@ -718,6 +766,9 @@ fn stream_session(shared: &Arc<Shared>, authed: Authed, writer: (TcpStream, Stre
     logi!("host: {} connected (session {id}) from {peer}{}", s.name,
           if others.is_empty() { String::new() } else { format!("; also connected: {}", others.join(", ")) });
     s.send(&Msg::Welcome { host_name: shared.cfg.name.clone() });
+    if let Some(d) = shared.displays.lock().unwrap().clone() {
+        s.send(&Msg::Displays(v(d)));
+    }
     logi!("host: {} signed in via {}", s.name, authed.mode);
     remember_device(shared, &s, &authed, connection_id);
     {
@@ -765,6 +816,12 @@ fn stream_session(shared: &Arc<Shared>, authed: Authed, writer: (TcpStream, Stre
             Msg::MouseButton(b) if s.mouse.load(Relaxed) => shared.input.lock().unwrap().mouse_button(&b.v),
             Msg::Scroll(sc) if s.mouse.load(Relaxed) => shared.input.lock().unwrap().scroll(&sc.v),
             Msg::ReleaseAll {} => shared.input.lock().unwrap().release_all(),
+            Msg::Gamepad(g) if s.controller.load(Relaxed) => shared.input.lock().unwrap().gamepad(s.id, &g.v),
+            // Anyone who may use the mouse or keyboard may pick the screen.
+            Msg::SelectDisplay { id } if s.mouse.load(Relaxed) || s.keyboard.load(Relaxed) => {
+                logi!("host: {} asked for screen {id}", s.name);
+                let _ = shared.video.send(VideoCommand::SelectDisplay(id, s.name.clone()));
+            }
             Msg::SetCursorInVideo(on) => {
                 let _ = shared.video.send(VideoCommand::CursorInVideo(on.v));
             }
@@ -841,8 +898,13 @@ fn end_session(shared: &Shared, s: &Arc<Session>, reason: &str, bye: Option<&str
     s.ended.store(true, Relaxed);
     let _ = s.writer.lock().unwrap().0.shutdown(Shutdown::Both);
     let _ = shared.video.send(VideoCommand::Close(s.id));
-    // Keys or buttons it was holding down (all of them: the injector doesn't know whose they are).
-    shared.input.lock().unwrap().release_all();
+    // Keys or buttons it was holding down (all of them: the injector doesn't know whose they are),
+    // and its virtual controllers.
+    {
+        let mut input = shared.input.lock().unwrap();
+        input.release_all();
+        input.viewer_left(s.id);
+    }
     shared.events.viewers_changed(&shared.sessions.lock().unwrap().iter().map(|s| s.name.clone()).collect::<Vec<_>>());
 }
 
@@ -874,6 +936,8 @@ fn video_loop(shared: Arc<Shared>, mut video: Box<dyn VideoBackend>, commands: R
     let fps = shared.cfg.fps.max(1);
     let mut frame_ids: HashMap<u32, u32> = HashMap::new();
     let mut failing_since: Option<Instant> = None;
+    let mut last_display_check = Instant::now() - Duration::from_secs(10);
+    publish_displays(&shared, &*video, false);
     while !shared.stopped.load(Relaxed) {
         while let Ok(cmd) = commands.try_recv() {
             match cmd {
@@ -889,7 +953,19 @@ fn video_loop(shared: Arc<Shared>, mut video: Box<dyn VideoBackend>, commands: R
                 }
                 VideoCommand::Bitrate(id, kbps) => video.set_bitrate(id, kbps),
                 VideoCommand::CursorInVideo(on) => video.set_cursor_in_video(on),
+                VideoCommand::SelectDisplay(id, who) => match video.select_display(&id) {
+                    Ok(()) => {
+                        logi!("capture: now sharing screen {id} (asked by {who})");
+                        publish_displays(&shared, &*video, true);
+                    }
+                    Err(e) => logi!("capture: couldn't switch to screen {id}: {e}"),
+                },
             }
+        }
+        // Screens plugged in or out, or the shared one changed: tell everyone (cheap; checked often).
+        if last_display_check.elapsed() > Duration::from_secs(2) {
+            last_display_check = Instant::now();
+            publish_displays(&shared, &*video, false);
         }
         if viewers.is_empty() {
             // Nobody watching: don't capture at all.
@@ -972,6 +1048,29 @@ fn video_loop(shared: Arc<Shared>, mut video: Box<dyn VideoBackend>, commands: R
                 s.key_requested.store(true, Relaxed);
             }
         }
+    }
+}
+
+/// Send viewers the list of screens when it changed (or `force`), and point the mouse at the shared one.
+fn publish_displays(shared: &Shared, video: &dyn VideoBackend, force: bool) {
+    let list = video.displays();
+    if list.is_empty() {
+        return;
+    }
+    let msg = DisplaysMsg { displays: list, current: video.current_display() };
+    {
+        let mut last = shared.displays.lock().unwrap();
+        if !force && last.as_ref() == Some(&msg) {
+            return;
+        }
+        *last = Some(msg.clone());
+    }
+    if let Some((l, t, w, h)) = video.display_rect() {
+        shared.input.lock().unwrap().set_screen(l, t, w, h);
+    }
+    let sessions = shared.sessions.lock().unwrap().clone();
+    for s in sessions {
+        s.send(&Msg::Displays(v(msg.clone())));
     }
 }
 
