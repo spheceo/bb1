@@ -1322,11 +1322,11 @@ fn log_stats(shared: &Shared, sessions: &[Arc<Session>]) {
 fn adapt_rate(shared: &Shared, s: &Arc<Session>, packets: u64, resent: u64) {
     let mut r = *s.rate.lock().unwrap();
     let old = r.rate;
-    // Back off only on real loss: at least 2% of the second's packets, and at least 8 of them. A few
-    // resends are normal on the internet; on a quiet screen (~40 packets a second) the old rule of 4
-    // knocked a friend in another city down to a quarter of full quality for no reason (2026-11-05),
-    // and a game starting then took ~20 s to look sharp again.
-    if resent >= 8 && resent * 50 >= packets {
+    // Back off only on heavy loss: at least 5% of the second's packets, and at least 12 of them. A
+    // friend in another city (2026-11-05) had a steady ~2% that the viewer recovered every time and that
+    // didn't shrink at a lower bitrate: line noise, not congestion. Backing off for it kept him at a sixth
+    // of full quality, and a game starting then took ~20 s to look sharp again.
+    if resent >= 12 && resent * 20 >= packets {
         r.rate = (r.rate * 0.7).max(0.15);
         r.clean_seconds = 0;
     } else {
