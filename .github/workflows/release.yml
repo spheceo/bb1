@@ -67,9 +67,12 @@ jobs:
           security delete-keychain "$RUNNER_TEMP/bb1-signing/signing.keychain-db" 2>/dev/null || true
           rm -rf "$RUNNER_TEMP/bb1-signing"
 
+  windows:
+    uses: ./.github/workflows/windows.yml
+
   publish:
     if: github.event_name == 'push'
-    needs: build
+    needs: [build, windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -88,5 +91,9 @@ jobs:
         with:
           name: bb1-macos-arm64
           path: apps/mac/dist
-      - name: Publish both files together
+      - uses: actions/download-artifact@v8
+        with:
+          name: bb1-windows-x64
+          path: apps/mac/dist/windows
+      - name: Publish Mac and Windows files together
         run: scripts/ci-publish.sh

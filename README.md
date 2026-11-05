@@ -48,3 +48,7 @@ bb1/
 ```
 
 Mac commands run from `apps/mac` (`cd apps/mac && scripts/release.sh --publish`).
+
+## License
+
+Copyright (C) 2026 the bb1 authors. bb1 is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License, version 3 or (at your option) any later version. See [LICENSE](LICENSE).

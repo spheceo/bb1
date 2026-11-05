@@ -3,6 +3,7 @@ name = "bb1"
 version = "0.1.0"
 edition = "2024"
 description = "bb1 client for Windows"
+license = "GPL-3.0-or-later"
 default-run = "bb1"
 
 [dependencies]

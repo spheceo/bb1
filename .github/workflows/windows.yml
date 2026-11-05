@@ -7,6 +7,7 @@ on:
   pull_request:
     paths: ['apps/windows/**', 'protocol/**', '.github/workflows/windows.yml']
   workflow_dispatch:
+  workflow_call:  # release.yml builds it for every nightly and release
 
 permissions:
   contents: read

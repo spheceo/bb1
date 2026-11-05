@@ -49,7 +49,7 @@ cd ../windows && BB1_SUPPORT_DIR=/tmp/pc cargo run --bin bb1-probe -- --host 127
 ffmpeg -v error -i /tmp/s.h264 -f null -   # no output = every frame decoded
 ```
 
-GitHub Actions builds `bb1.exe` on Windows when this folder changes (`.github/workflows/windows.yml`, artifact `bb1-windows-x64` with `bb1-setup.exe` and the bare `bb1.exe`).
+GitHub Actions builds `bb1.exe` and `bb1-setup.exe` on Windows when this folder changes (`.github/workflows/windows.yml`, artifact `bb1-windows-x64`), and for every nightly and release, which then carry `bb1-windows-nightly-<M>-setup.exe` (or `bb1-windows-v<VERSION>-setup.exe`) next to the Mac files.
 
 ## Not yet
 

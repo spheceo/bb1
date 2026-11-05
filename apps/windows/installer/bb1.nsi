@@ -39,7 +39,7 @@ VIAddVersionKey "FileDescription" "${APP} for Windows installer"
 VIAddVersionKey "FileVersion" "${VERSION}.${BUILD}"
 VIAddVersionKey "ProductVersion" "${VERSION}"
 VIAddVersionKey "CompanyName" "${APP}"
-VIAddVersionKey "LegalCopyright" "${APP}"
+VIAddVersionKey "LegalCopyright" "Copyright (C) 2026 the ${APP} authors. GPL-3.0-or-later."
 
 !include MUI2.nsh
 !include LogicLib.nsh

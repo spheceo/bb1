@@ -67,6 +67,8 @@ with tempfile.TemporaryDirectory(prefix="bb1-release-guards-") as temporary:
     filenames = ["bb1-nightly--23.dmg", "bb1-0.0.1-build2.zip"]
     for filename in filenames:
         (dist / filename).write_bytes(b"Fixture deliverable")
+    (dist / "windows").mkdir()
+    (dist / "windows" / "bb1-setup.exe").write_bytes(b"Fixture Windows installer")
     (dist / "SHA256SUMS").write_text("".join(
         f"{hashlib.sha256((dist / filename).read_bytes()).hexdigest()}  {filename}\n"
         for filename in filenames
