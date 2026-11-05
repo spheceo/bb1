@@ -289,7 +289,7 @@ impl Updater {
             let file = dir.join(&release.installer_name);
             if let Err(e) = download(&release.installer_url, &file, release.size, |p| me.set(Phase::Downloading(p))) {
                 logi!("update: download failed: {e}");
-                me.set(Phase::Failed(format!("Couldn't download the update ({e})")));
+                me.set(Phase::Failed(format!("Couldn't download the update: {e}. Try again, or get {} from github.com/spheceo/bb1/releases", release.installer_name)));
                 return;
             }
             me.set(Phase::Installing);
@@ -397,12 +397,20 @@ pub(crate) fn download(url: &str, to: &std::path::Path, size: u64, progress: imp
         match child.try_wait() {
             Ok(Some(status)) => {
                 let got = std::fs::metadata(to).map(|m| m.len()).unwrap_or(0);
-                return if status.success() && (size == 0 || got == size) {
+                if status.success() && (size == 0 || got == size) {
                     progress(1.0);
-                    Ok(())
+                    return Ok(());
+                }
+                // What went wrong, in words (curl's exit codes), so the log and the pill say it.
+                let why = if status.success() {
+                    // Complete per curl, but not the file we expected: something took it away or cut it short.
+                    if got == 0 { "the downloaded file disappeared (an antivirus may have removed it)".to_string() }
+                    else { format!("incomplete download ({got} of {size} bytes)") }
                 } else {
-                    Err(if status.success() { "incomplete download".into() } else { "network error".into() })
+                    curl_failure(status.code().unwrap_or(-1))
                 };
+                logi!("update: download of {url} failed: {why}");
+                return Err(why);
             }
             Ok(None) => {
                 if size > 0 {
@@ -414,6 +422,22 @@ pub(crate) fn download(url: &str, to: &std::path::Path, size: u64, progress: imp
             Err(e) => return Err(e.to_string()),
         }
     }
+}
+
+/// curl's exit code → what happened.
+fn curl_failure(code: i32) -> String {
+    let what = match code {
+        6 => "couldn't look up GitHub's address (no internet, or DNS blocked)",
+        7 => "couldn't connect to GitHub",
+        22 => "GitHub answered with an error",
+        23 => "couldn't save the file (an antivirus may have blocked it, or the disk is full)",
+        28 => "the download timed out",
+        35 | 60 => "a secure connection couldn't be made (something on the network is intercepting it)",
+        56 => "the connection dropped",
+        -1 => "curl.exe couldn't run",
+        _ => "the download failed",
+    };
+    format!("{what} (curl {code})")
 }
 
 #[derive(Deserialize)]
