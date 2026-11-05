@@ -76,6 +76,10 @@ pub struct KnownHost {
     /// The address used when pairing.
     #[serde(default)]
     pub address: Option<String>,
+    /// Where it was last seen on the home network ("192.168.3.10:47800"), so it can be tried even when
+    /// Bonjour is quiet (a firewall blocking it, say).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lan_address: Option<String>,
 }
 
 impl KnownHost {
@@ -109,6 +113,29 @@ impl KnownHost {
         Self::save(&hosts);
     }
 
+    /// Remember where a paired Mac is on the home network (only writes when it changed).
+    pub fn note_lan_address(host_id: &str, address: &str) {
+        let mut hosts = Self::load();
+        let Some(h) = hosts.iter_mut().find(|h| h.host_id == host_id) else { return };
+        if h.lan_address.as_deref() == Some(address) {
+            return;
+        }
+        h.lan_address = Some(address.to_string());
+        Self::save(&hosts);
+    }
+
+    /// Every address this Mac can be reached at, home network first.
+    pub fn routes(&self) -> Vec<String> {
+        let mut v: Vec<String> = Vec::new();
+        let home = self.lan_address.clone().or_else(|| self.address.clone().filter(|a| !crate::core::tailscale::is_tailscale_ip(&host_of(a))));
+        for a in [home, self.tailscale_ip.clone()].into_iter().flatten() {
+            if !v.iter().any(|x| host_of(x) == host_of(&a)) {
+                v.push(a);
+            }
+        }
+        v
+    }
+
     /// The pairing for a Mac reached at this address or with this name, if any.
     pub fn find(address: &str, name: &str) -> Option<KnownHost> {
         let host_part = address.rsplit_once(':').map(|(h, _)| h).unwrap_or(address);
@@ -116,6 +143,7 @@ impl KnownHost {
             h.tailscale_ip.as_deref() == Some(host_part)
                 || h.address.as_deref() == Some(address)
                 || h.address.as_deref() == Some(host_part)
+                || h.lan_address.as_deref() == Some(address)
                 || (!name.is_empty() && h.name.eq_ignore_ascii_case(name))
         })
     }
@@ -151,5 +179,40 @@ impl Settings {
         if let Ok(d) = serde_json::to_vec_pretty(self) {
             let _ = std::fs::write(Self::path(), d);
         }
+    }
+}
+
+/// "192.168.3.10:47800" → "192.168.3.10", "[fd7a::1]:47800" → "fd7a::1", "kenobi" → "kenobi"
+pub fn host_of(address: &str) -> String {
+    let a = address.trim();
+    if let Some(rest) = a.strip_prefix('[') {
+        return rest.split(']').next().unwrap_or(rest).to_string();
+    }
+    if a.matches(':').count() == 1 {
+        return a.split(':').next().unwrap_or(a).to_string();
+    }
+    a.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn routes_put_the_home_network_first() {
+        let k = KnownHost {
+            host_id: "x".into(),
+            name: "Mac".into(),
+            secret: vec![1],
+            tailscale_ip: Some("100.80.66.124".into()),
+            address: Some("100.80.66.124:47800".into()),
+            lan_address: Some("192.168.3.10:47800".into()),
+        };
+        assert_eq!(k.routes(), vec!["192.168.3.10:47800".to_string(), "100.80.66.124".to_string()]);
+        let paired_over_tailscale = KnownHost { lan_address: None, ..k.clone() };
+        assert_eq!(paired_over_tailscale.routes(), vec!["100.80.66.124".to_string()]);
+        assert_eq!(host_of("[fd7a::1]:47800"), "fd7a::1");
+        assert_eq!(host_of("192.168.3.10:47800"), "192.168.3.10");
+        assert_eq!(host_of("kenobi"), "kenobi");
     }
 }

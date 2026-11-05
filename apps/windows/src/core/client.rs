@@ -42,25 +42,57 @@ impl Auth {
 
 #[derive(Clone, Debug)]
 pub struct Target {
-    /// "100.80.66.124:47800", "kenobi.local", "[fd7a::1]:47800"
+    /// The address in use: "100.80.66.124:47800", "kenobi.local", "[fd7a::1]:47800"
     pub address: String,
     pub label: String,
     pub auth: Auth,
     pub tailscale_ip: Option<String>,
+    /// Every way to reach this Mac, best first (home network, then Tailscale). A paired Mac can be
+    /// signed in to over any of them; the connection moves to the next when one stops answering.
+    pub routes: Vec<String>,
 }
 
 impl Target {
     /// Picks how to sign in: a remembered pairing, else Tailscale (on a Tailscale address), else a code.
+    /// A paired Mac also gets its other remembered addresses as fallbacks.
     pub fn new(address: &str, label: &str) -> Target {
         let address = with_port(address);
         let host = host_part(&address);
         let tailscale_ip = tailscale::is_tailscale_ip(&host).then(|| host.clone());
-        let auth = match KnownHost::find(&address, label) {
-            Some(k) => Auth::Device(k.secret),
+        let known = KnownHost::find(&address, label);
+        let mut routes = vec![address.clone()];
+        let auth = match known {
+            Some(k) => {
+                for r in k.routes() {
+                    let r = with_port(&r);
+                    if !routes.iter().any(|x| host_part(x) == host_part(&r)) {
+                        routes.push(r);
+                    }
+                }
+                Auth::Device(k.secret)
+            }
             None if tailscale_ip.is_some() => Auth::Tailscale,
             None => Auth::Code,
         };
-        Target { address, label: if label.is_empty() { host } else { label.to_string() }, auth, tailscale_ip }
+        Target { address, label: if label.is_empty() { host } else { label.to_string() }, auth, tailscale_ip, routes }
+    }
+
+    /// Which network an address is on, for the log and status.
+    fn network(address: &str) -> &'static str {
+        if tailscale::is_tailscale_ip(&host_part(address)) { "Tailscale" } else { "the home network" }
+    }
+
+    /// Switch to `routes[i]`. Only a pairing works on every route: Tailscale sign-in needs a Tailscale
+    /// address, and a code is only offered where it was asked for.
+    fn use_route(&mut self, i: usize) -> bool {
+        let Some(address) = self.routes.get(i).cloned() else { return false };
+        if address == self.address || !matches!(self.auth, Auth::Device(_)) {
+            return false;
+        }
+        let host = host_part(&address);
+        self.tailscale_ip = tailscale::is_tailscale_ip(&host).then(|| host.clone());
+        self.address = address;
+        true
     }
 }
 
@@ -310,6 +342,9 @@ fn supervise(shared: Arc<Shared>) {
     let mut retried_after_forgotten = false;
     let mut ever_welcomed = false;
     let mut failed_before_welcome = 0;
+    // Which route worked last, and how many tries in a row failed since.
+    let mut good_route = 0usize;
+    let mut failures = 0usize;
     loop {
         if shared.stopped.load(Relaxed) {
             shared.events.ended("Disconnected.");
@@ -324,6 +359,9 @@ fn supervise(shared: Arc<Shared>) {
         if welcomed {
             retry = 0.25;
             ever_welcomed = true;
+            failures = 0;
+            let t = shared.target.lock().unwrap();
+            good_route = t.routes.iter().position(|r| *r == t.address).unwrap_or(0);
         }
         match end {
             End::Ended(reason) => {
@@ -337,6 +375,12 @@ fn supervise(shared: Arc<Shared>) {
                     // The Mac forgot this PC: drop the stale pairing and sign in again the other way.
                     if let Some(k) = KnownHost::find(&t.address, &t.label) {
                         KnownHost::forget(&k.host_id);
+                    }
+                    if t.tailscale_ip.is_none() {
+                        if let Some(ts) = t.routes.iter().find(|r| tailscale::is_tailscale_ip(&host_part(r))).cloned() {
+                            t.tailscale_ip = Some(host_part(&ts));
+                            t.address = ts;
+                        }
                     }
                     t.auth = if t.tailscale_ip.is_some() { Auth::Tailscale } else { Auth::Code };
                     retried_after_forgotten = true;
@@ -355,10 +399,23 @@ fn supervise(shared: Arc<Shared>) {
                     shared.events.ended(&format!("Pairing didn't finish ({why})."));
                     return;
                 }
+                // Another route? A dropped stream first tries the same one again (a blip), then
+                // alternates; a Mac that never answered moves on at once. Leaving home mid-stream
+                // lands on Tailscale this way, and a Mac whose Tailscale is down on the home network.
+                failures += 1;
+                let routes = {
+                    let mut t = shared.target.lock().unwrap();
+                    let n = t.routes.len().max(1);
+                    let next = if ever_welcomed { (good_route + failures - 1) % n } else { (good_route + failures) % n };
+                    if t.use_route(next) {
+                        logi!("client: trying {} ({}) instead", Target::network(&t.address), t.address);
+                    }
+                    n
+                };
                 // Never got in at all: say why instead of retrying forever (a dropped stream still reconnects).
                 if !ever_welcomed {
                     failed_before_welcome += 1;
-                    if failed_before_welcome >= 3 {
+                    if failed_before_welcome >= 3.max(2 * routes) {
                         let label = shared.target.lock().unwrap().label.clone();
                         logi!("client: couldn't connect to {label}: {why}");
                         shared.events.ended(&format!("Couldn't connect to {label}: {why}."));
@@ -386,14 +443,14 @@ fn teardown(shared: &Shared) {
     shared.audio.clear();
 }
 
-fn connect_tcp(address: &str) -> Result<TcpStream, String> {
+fn connect_tcp(address: &str, wait: Duration) -> Result<TcpStream, String> {
     let addrs: Vec<SocketAddr> = address.to_socket_addrs().map_err(|e| format!("can't find {address} ({e})"))?.collect();
     let mut last = format!("can't find {address}");
     // IPv4 first: that's what bb1 hosts listen on for sure.
     let mut sorted = addrs.clone();
     sorted.sort_by_key(|a| a.is_ipv6());
     for a in sorted {
-        match TcpStream::connect_timeout(&a, Duration::from_secs(5)) {
+        match TcpStream::connect_timeout(&a, wait) {
             Ok(s) => return Ok(s),
             Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
                 last = "bb1 isn't sharing on that Mac (it refused the connection)".into()
@@ -556,7 +613,8 @@ fn run_session(shared: &Arc<Shared>) -> (End, bool) {
     let target = shared.target.lock().unwrap().clone();
     shared.events.status(&format!("Connecting to {}…", target.label), false);
     let connect_started = now_us();
-    let mut stream = match connect_tcp(&target.address) {
+    let wait = if target.routes.len() > 1 { Duration::from_secs(2) } else { Duration::from_secs(5) };
+    let mut stream = match connect_tcp(&target.address, wait) {
         Ok(s) => s,
         Err(e) => return (End::Closed(e), false),
     };
@@ -803,6 +861,7 @@ impl Session {
                     secret: p.secret.clone(),
                     tailscale_ip: t.tailscale_ip.clone(),
                     address: Some(t.address.clone()),
+                    lan_address: t.tailscale_ip.is_none().then(|| t.address.clone()),
                 };
                 KnownHost::remember(known.clone());
                 t.auth = Auth::Device(p.secret);

@@ -141,14 +141,16 @@ final class HostDirectory {
     static func target(for e: Entry, preferTailscale: Bool = false) -> ClientTarget? {
         let port = NWEndpoint.Port(rawValue: BB1.controlPort)!
         if let known = e.known {
-            if let lan = e.lan, !(preferTailscale && e.tailscaleIP != nil) {
-                return ClientTarget(endpoint: lan, label: e.name, auth: .device(secret: known.secret))
+            // Home network first when the host is there, Tailscale as the fallback (and the other way
+            // round when asked); the connection switches between them by itself.
+            let tailscale = (e.tailscaleIP ?? known.tailscaleIP).map {
+                (endpoint: NWEndpoint.hostPort(host: NWEndpoint.Host($0), port: port), tailscaleIP: Optional($0))
             }
-            if let ip = e.tailscaleIP {
-                return ClientTarget(endpoint: .hostPort(host: NWEndpoint.Host(ip), port: port), label: e.name,
-                                    auth: .device(secret: known.secret), tailscaleIP: ip)
-            }
-            return nil
+            let home = e.lan.map { (endpoint: $0, tailscaleIP: String?.none) }
+            let routes = (preferTailscale ? [tailscale, home] : [home, tailscale]).compactMap { $0 }
+            guard let first = routes.first else { return nil }
+            return ClientTarget(endpoint: first.endpoint, label: e.name, auth: .device(secret: known.secret),
+                                tailscaleIP: first.tailscaleIP, fallback: routes.dropFirst().first)
         }
         if e.onMyTailscale, let ip = e.tailscaleIP, preferTailscale || e.lan == nil || e.known == nil {
             return ClientTarget(endpoint: .hostPort(host: NWEndpoint.Host(ip), port: port), label: e.name,

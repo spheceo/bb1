@@ -114,6 +114,13 @@ Section "-${APP}" SecApp
   File "/oname=${APP}.exe" "${EXE}"
   WriteUninstaller "$INSTDIR\Uninstall ${APP}.exe"
 
+  ; Let bb1 hear Macs on the home network (Bonjour answers) and their video, on any network type:
+  ; Windows often calls a home network "Public". bb1 itself doesn't accept connections.
+  nsExec::Exec 'netsh advfirewall firewall delete rule name="${APP}"'
+  Pop $0
+  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="${APP}" dir=in action=allow program="$INSTDIR\${APP}.exe" enable=yes profile=any'
+  Pop $0
+
   SetShellVarContext all
   CreateShortcut "$SMPROGRAMS\${APP}.lnk" "$INSTDIR\${APP}.exe"
 
@@ -146,6 +153,9 @@ Section "Uninstall"
     nsExec::ExecToLog `${PS} "Remove-MpPreference -ExclusionPath '$INSTDIR' -ErrorAction SilentlyContinue"`
     Pop $0
   ${EndIf}
+
+  nsExec::Exec 'netsh advfirewall firewall delete rule name="${APP}"'
+  Pop $0
 
   SetShellVarContext all
   Delete "$SMPROGRAMS\${APP}.lnk"

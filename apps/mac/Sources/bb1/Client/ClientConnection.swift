@@ -9,6 +9,9 @@ struct ClientTarget {
     var auth: ControlChannel.ClientAuth
     /// The Tailscale address we're connecting to, if this goes over Tailscale.
     var tailscaleIP: String?
+    /// Another way to reach the same host (its Tailscale address when `endpoint` is the home network).
+    /// Only used with a pairing, which works on either; the connection moves over when one stops answering.
+    var fallback: (endpoint: NWEndpoint, tailscaleIP: String?)? = nil
 }
 
 struct ClientCounters {
@@ -91,6 +94,11 @@ final class ClientConnection {
     private var gen = 0
     private var stopped = false
     private var retryDelay = 0.25
+    /// Every way to reach the host, best first, which one last worked, and failed tries since.
+    private var routes: [(endpoint: NWEndpoint, tailscaleIP: String?)] = []
+    private var goodRoute = 0
+    private var failures = 0
+    private var everWelcomed = false
     private var control: ControlChannel?
     private var udp: NWConnection?
     private var keys: SessionKeys?
@@ -135,6 +143,7 @@ final class ClientConnection {
 
     init(target: ClientTarget) {
         self.target = target
+        routes = [(target.endpoint, target.tailscaleIP)] + (target.fallback.map { [$0] } ?? [])
         decoder.onError = { [weak self] reason in
             guard let self else { return }
             self.queue.async {
@@ -304,12 +313,28 @@ final class ClientConnection {
         counters.with { $0.reconnects += 1 }
         teardown()
         status("Reconnecting… (\(reason))", connected: false)
+        chooseRoute()
         let wait = delay ?? retryDelay
         retryDelay = min(retryDelay * 2, 3)
         queue.asyncAfter(deadline: .now() + wait) { [weak self] in
             guard let self, !self.stopped, self.control == nil else { return }
             self.connect()
         }
+    }
+
+    /// A dropped stream first tries the same route again (a blip), then alternates; a host that never
+    /// answered moves on at once. So leaving home mid-stream lands on Tailscale, and a host whose
+    /// Tailscale is down is still reached on the home network. Only a pairing works on every route.
+    private func chooseRoute() {
+        guard routes.count > 1, case .device = target.auth else { return }
+        failures += 1
+        let next = (goodRoute + (everWelcomed ? failures - 1 : failures)) % routes.count
+        let route = routes[next]
+        guard "\(route.endpoint)" != "\(target.endpoint)" else { return }
+        target.endpoint = route.endpoint
+        target.tailscaleIP = route.tailscaleIP
+        path.with { $0 = "" }
+        Log.info("client: trying \(route.tailscaleIP == nil ? "the home network" : "Tailscale") (\(route.endpoint)) instead")
     }
 
     private func end(_ reason: String) {
@@ -325,6 +350,9 @@ final class ClientConnection {
         switch message {
         case .welcome(let hostName):
             retryDelay = 0.25
+            everWelcomed = true
+            failures = 0
+            goodRoute = routes.firstIndex { "\($0.endpoint)" == "\(target.endpoint)" } ?? 0
             Log.info("client: connected to \(hostName) (protocol v\(control?.peerVersion ?? 1))")
             status("Connected to \(hostName)", connected: true)
             if supportsV2 {
@@ -585,7 +613,9 @@ final class ClientConnection {
         let now = Clock.nowUs()
         guard keys != nil else {
             if control?.awaitingCode == true { connectStartedUs = now; return } // the user is typing the code
-            if now - connectStartedUs > 6_000_000 { scheduleReconnect("handshake timed out") }
+            // With another route to try, don't wait as long on one that may be gone (left home).
+            let limit: UInt64 = routes.count > 1 ? 3_000_000 : 6_000_000
+            if now - connectStartedUs > limit { scheduleReconnect("handshake timed out") }
             return
         }
         if now - lastPathCheckUs > 15_000_000 { lastPathCheckUs = now; checkPath() }

@@ -3,6 +3,8 @@ import BB1Core
 
 struct ClientOptions {
     var host: String?
+    /// Another address for the same host, tried when `host` stops answering (needs a pairing).
+    var fallback: String?
     var key: String?
     var tailscale = false
     var pair = false
@@ -10,8 +12,9 @@ struct ClientOptions {
     var seconds: Double = 10
 
     static let usage = """
-    usage: bb1 client [--host ADDRESS[:PORT]] [--key KEY | --tailscale | --pair] [--headless [--seconds N]]
+    usage: bb1 client [--host ADDRESS[:PORT] [--fallback ADDRESS[:PORT]]] [--key KEY | --tailscale | --pair] [--headless [--seconds N]]
       --host           connect straight away (signs in with a remembered pairing if there is one)
+      --fallback       another address for the same Mac, used when --host stops answering
       --key KEY        sign in with an old pairing key
       --tailscale      sign in with Tailscale (the address must be a Tailscale address)
       --pair           pair with a 6-digit code (asked in the terminal with --headless)
@@ -30,6 +33,7 @@ struct ClientOptions {
         while i < args.count {
             switch args[i] {
             case "--host": o.host = next()
+            case "--fallback": o.fallback = next()
             case "--key": o.key = next()
             case "--tailscale": o.tailscale = true
             case "--pair": o.pair = true
@@ -63,7 +67,12 @@ struct ClientOptions {
         } else {
             auth = .code
         }
-        return ClientTarget(endpoint: endpoint, label: host, auth: auth, tailscaleIP: tailscaleIP)
+        var target = ClientTarget(endpoint: endpoint, label: host, auth: auth, tailscaleIP: tailscaleIP)
+        if let fallback, let other = parseEndpoint(fallback) {
+            let address = fallback.split(separator: ":").first.map(String.init) ?? fallback
+            target.fallback = (other, Tailscale.isTailscaleIP(address) ? address : nil)
+        }
+        return target
     }
 }
 

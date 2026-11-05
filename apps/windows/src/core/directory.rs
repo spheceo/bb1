@@ -52,6 +52,8 @@ struct State {
     failed_at: HashMap<String, Instant>,
     /// Tailscale Macs whose bb1 answered, by IP.
     answering: HashSet<String>,
+    /// Paired Macs that answered at their remembered home-network address (Bonjour may not see them).
+    lan_answering: HashSet<String>,
     peers: Vec<tailscale::Peer>,
     tailscale_running: bool,
     next_version: u64,
@@ -156,9 +158,22 @@ impl Directory {
                 std::thread::spawn(move || (tailscale::bb1_answers(&ip, Duration::from_millis(1500)), ip))
             })
             .collect();
+        // Paired Macs at their last home-network address, in case Bonjour can't see them.
+        let lan_handles: Vec<_> = KnownHost::load()
+            .into_iter()
+            .filter_map(|k| k.lan_address)
+            .map(|a| {
+                std::thread::spawn(move || {
+                    let ok = a.parse::<std::net::SocketAddr>().is_ok_and(|sa| std::net::TcpStream::connect_timeout(&sa, Duration::from_millis(600)).is_ok());
+                    (ok, a)
+                })
+            })
+            .collect();
         let answering: HashSet<String> = handles.into_iter().filter_map(|h| h.join().ok()).filter(|(ok, _)| *ok).map(|(_, ip)| ip).collect();
+        let lan_answering: HashSet<String> = lan_handles.into_iter().filter_map(|h| h.join().ok()).filter(|(ok, _)| *ok).map(|(_, a)| a).collect();
         let mut s = self.state.lock().unwrap();
         s.answering = answering;
+        s.lan_answering = lan_answering;
         s.peers = peers.unwrap_or_default();
         s.tailscale_running = running;
     }
@@ -171,29 +186,62 @@ impl Directory {
         let mut want_previews: Vec<Target> = Vec::new();
         {
             let mut s = self.state.lock().unwrap();
-            let mut by_name: Vec<Entry> = Vec::new();
-            let add = |list: &mut Vec<Entry>, e: Entry| {
-                if let Some(x) = list.iter_mut().find(|x| x.name.eq_ignore_ascii_case(&e.name)) {
-                    if !x.online && e.online {
-                        *x = Entry { quiet: x.quiet || e.quiet, ..e };
-                    } else {
-                        x.quiet |= e.quiet;
-                    }
-                } else {
-                    list.push(e);
-                }
-            };
-            for p in s.peers.iter().filter(|p| s.answering.contains(&p.ip)) {
-                add(&mut by_name, Entry { name: p.name.clone(), address: Some(p.ip.clone()), online: true, quiet: true });
+            // One row per Mac. A paired Mac is recognised on every network by its pairing, so its
+            // Tailscale name ("kenobi") and Bonjour name ("Siphesihle's MacBook Air") meet in one row.
+            struct Row {
+                name: String,
+                lan: Option<String>,
+                tailscale: Option<String>,
+                remembered: Option<String>,
+                paired: bool,
+                on_my_tailscale: bool,
             }
-            for h in &lan {
-                let paired = KnownHost::find(&h.address, &h.name).is_some();
-                add(&mut by_name, Entry { name: h.name.clone(), address: Some(h.address.clone()), online: true, quiet: paired });
+            let mut rows: Vec<Row> = Vec::new();
+            fn row<'a>(rows: &'a mut Vec<Row>, name: &str) -> &'a mut Row {
+                if let Some(i) = rows.iter().position(|r| r.name.eq_ignore_ascii_case(name)) {
+                    return &mut rows[i];
+                }
+                rows.push(Row { name: name.to_string(), lan: None, tailscale: None, remembered: None, paired: false, on_my_tailscale: false });
+                rows.last_mut().unwrap()
             }
             for k in &known {
-                let address = k.tailscale_ip.clone().or_else(|| k.address.clone());
-                add(&mut by_name, Entry { name: k.name.clone(), address, online: false, quiet: true });
+                let r = row(&mut rows, &k.name);
+                r.paired = true;
+                r.remembered = k.tailscale_ip.clone().or_else(|| k.lan_address.clone()).or_else(|| k.address.clone());
+                if k.lan_address.as_ref().is_some_and(|a| s.lan_answering.contains(a)) {
+                    r.lan = k.lan_address.clone();
+                }
             }
+            for h in &lan {
+                let k = KnownHost::find(&h.address, &h.name);
+                if let Some(k) = &k {
+                    KnownHost::note_lan_address(&k.host_id, &h.address);
+                }
+                let name = k.map(|k| k.name).unwrap_or_else(|| h.name.clone());
+                row(&mut rows, &name).lan = Some(h.address.clone());
+            }
+            for p in s.peers.iter().filter(|p| s.answering.contains(&p.ip)) {
+                let name = known.iter().find(|k| k.tailscale_ip.as_deref() == Some(p.ip.as_str())).map(|k| k.name.clone()).unwrap_or_else(|| p.name.clone());
+                let r = row(&mut rows, &name);
+                r.tailscale = Some(p.ip.clone());
+                r.on_my_tailscale = true;
+            }
+            // Where to connect: a paired Mac goes over the home network when it's there, else Tailscale
+            // (the connection falls back between them by itself). An unpaired one signs in with Tailscale
+            // if it can, since the home network would need a code.
+            let by_name: Vec<Entry> = rows
+                .into_iter()
+                .map(|r| {
+                    let online = r.lan.is_some() || r.on_my_tailscale;
+                    let address = if r.paired {
+                        r.lan.clone().or(r.tailscale.clone()).or(r.remembered.clone())
+                    } else {
+                        r.tailscale.clone().or(r.lan.clone())
+                    };
+                    Entry { name: r.name, address, online, quiet: r.paired || r.on_my_tailscale }
+                })
+                .collect();
+            let mut by_name = by_name;
             by_name.sort_by(|a, b| (!a.online, a.name.to_lowercase()).cmp(&(!b.online, b.name.to_lowercase())));
             if by_name.iter().map(|e| (&e.name, e.online, &e.address)).ne(s.entries.iter().map(|e| (&e.name, e.online, &e.address))) {
                 changed = true;

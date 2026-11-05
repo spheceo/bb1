@@ -28,7 +28,7 @@ Rust. `src/core` is the protocol, crypto and connection logic (any platform); `s
 | Keyboard | Low-level keyboard hook; scan codes → Mac key codes (`src/core/keymap.rs`) |
 | Sound | WASAPI shared mode, behind the same adaptive jitter buffer as the Mac client |
 | Clipboard | Text and images (PNG/DIB); password-manager copies are skipped |
-| Finding Macs | `tailscale status --json`, Bonjour (`_bb1._tcp`), and remembered pairings |
+| Finding Macs | `tailscale status --json`, Bonjour (`_bb1._tcp`), and remembered pairings (with each Mac's last home address). A paired Mac is reached over the home network when it's there, else Tailscale, and the connection switches between them when one stops answering |
 
 `cargo test` checks the protocol against `protocol/vectors.json`, which the Mac app writes (`cd apps/mac && swift run bb1-selftest --vectors ../../protocol/vectors.json`), so both sides agree on every byte.
 
