@@ -210,6 +210,13 @@ struct Counters {
     encoded: AtomicU64,
     nacks: AtomicU64,
     resent: AtomicU64,
+    // Input since the last stats line (counts only, never what was pressed).
+    keys: AtomicU64,
+    mouse: AtomicU64,
+    pads: AtomicU64,
+    /// Controller updates that arrived while the owner had this viewer's controller switched off.
+    pads_blocked: AtomicU64,
+    rumble: AtomicU64,
 }
 
 struct Session {
@@ -335,6 +342,7 @@ impl Host {
                 let Some(shared) = weak.upgrade() else { return };
                 let s = shared.sessions.lock().unwrap().iter().find(|s| s.id == viewer).cloned();
                 if let Some(s) = s {
+                    s.counters.rumble.fetch_add(1, Relaxed);
                     s.send(&Msg::Rumble(v(r)));
                 }
             }));
@@ -755,7 +763,8 @@ fn stream_session(shared: &Arc<Shared>, authed: Authed, writer: (TcpStream, Stre
         controller: AtomicBool::new(true),
         recent: Mutex::new(HashMap::new()),
         frames: tx,
-        counters: Counters { sent: AtomicU64::new(0), sent_bytes: AtomicU64::new(0), encoded: AtomicU64::new(0), nacks: AtomicU64::new(0), resent: AtomicU64::new(0) },
+        counters: Counters { sent: AtomicU64::new(0), sent_bytes: AtomicU64::new(0), encoded: AtomicU64::new(0), nacks: AtomicU64::new(0), resent: AtomicU64::new(0),
+                             keys: AtomicU64::new(0), mouse: AtomicU64::new(0), pads: AtomicU64::new(0), pads_blocked: AtomicU64::new(0), rumble: AtomicU64::new(0) },
         rate: Mutex::new(RateState { rate: 1.0, clean_seconds: 0 }),
         pace: AtomicU64::new(pace_for(bitrate as f64)),
         baseline: Mutex::new((0, 0, 0, 0)),
@@ -800,6 +809,17 @@ fn stream_session(shared: &Arc<Shared>, authed: Authed, writer: (TcpStream, Stre
         };
         let Some(plain) = opener.open(&body) else { break Err("message failed authentication".into()) };
         let Some(msg) = Msg::decode(&plain) else { continue };
+        // Count input per viewer for the stats line.
+        let counter = match &msg {
+            Msg::Key(_) | Msg::CapsLock(_) => Some(&s.counters.keys),
+            Msg::MouseMove(_) | Msg::MouseButton(_) | Msg::Scroll(_) => Some(&s.counters.mouse),
+            Msg::Gamepad(_) if s.controller.load(Relaxed) => Some(&s.counters.pads),
+            Msg::Gamepad(_) => Some(&s.counters.pads_blocked),
+            _ => None,
+        };
+        if let Some(c) = counter {
+            c.fetch_add(1, Relaxed);
+        }
         match msg {
             Msg::Ping(p) => {
                 s.last_ping_us.store(now_us(), Relaxed);
@@ -1249,7 +1269,18 @@ fn log_stats(shared: &Shared, sessions: &[Arc<Session>]) {
         let now = (s.counters.sent.load(Relaxed), s.counters.sent_bytes.load(Relaxed), s.counters.nacks.load(Relaxed), s.counters.resent.load(Relaxed));
         let b = std::mem::replace(&mut *s.baseline.lock().unwrap(), now);
         let (sent, bytes, nacks, resent) = (now.0 - b.0, now.1 - b.1, now.2 - b.2, now.3 - b.3);
-        lines.push(format!("{} {sent} fps {:.1} Mbps nacks {nacks} resent {resent}", s.name, bytes as f64 * 8.0 / 1e6));
+        let take = |c: &AtomicU64| c.swap(0, Relaxed);
+        let (keys, mouse, pads, blocked, rumble) =
+            (take(&s.counters.keys), take(&s.counters.mouse), take(&s.counters.pads), take(&s.counters.pads_blocked), take(&s.counters.rumble));
+        let mut line = format!("{} {sent} fps {:.1} Mbps nacks {nacks} resent {resent} · input {keys} keys {mouse} mouse {pads} pad",
+                               s.name, bytes as f64 * 8.0 / 1e6);
+        if blocked > 0 {
+            line.push_str(&format!(" ({blocked} pad ignored: controller off)"));
+        }
+        if rumble > 0 {
+            line.push_str(&format!(" · rumble {rumble}"));
+        }
+        lines.push(line);
         adapt_rate(shared, s, bytes / 1200, resent);
     }
     logi!("stats: captured {captured} fps · encode avg {:.1} max {:.1} ms · {}",
