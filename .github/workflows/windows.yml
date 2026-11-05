@@ -19,13 +19,26 @@ jobs:
         working-directory: apps/windows
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # build number = commit count
       - name: Protocol, crypto and key-map checks (against protocol/vectors.json from the Mac app)
         run: cargo test --locked
       - name: Build bb1.exe (unsigned)
         run: cargo build --release --locked --bin bb1
+      - name: Build bb1-setup.exe (installs to Program Files, adds a Defender exclusion)
+        shell: bash
+        run: |
+          nsis="/c/Program Files (x86)/NSIS"
+          [[ -x "$nsis/makensis.exe" ]] || choco install nsis -y --no-progress
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          "$nsis/makensis.exe" -V2 -DVERSION="$version" -DBUILD="$(git rev-list --count HEAD)" \
+            -DEXE="$(cygpath -w "$PWD/target/release/bb1.exe")" \
+            -DOUT="$(cygpath -w "$PWD/target/release/bb1-setup.exe")" installer/bb1.nsi
       - uses: actions/upload-artifact@v7
         with:
           name: bb1-windows-x64
-          path: apps/windows/target/release/bb1.exe
+          path: |
+            apps/windows/target/release/bb1-setup.exe
+            apps/windows/target/release/bb1.exe
           retention-days: 14
           if-no-files-found: error

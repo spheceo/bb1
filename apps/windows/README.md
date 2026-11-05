@@ -4,7 +4,7 @@ Connect to a Mac running bb1 from a Windows 10 or 11 PC. In testing.
 
 ## Use it
 
-1. Run `bb1.exe`. It isn't signed, so the first time Windows says "Windows protected your PC": click **More info → Run anyway**. That's once per download.
+1. Run `bb1-setup.exe`. It isn't signed, so Windows says "Windows protected your PC": click **More info → Run anyway**, then **Yes** to let it make changes. It installs to `C:\Program Files\bb1`, adds a Start menu entry, and (box ticked by default) tells Microsoft Defender to leave that folder alone, so Defender doesn't delete bb1. If Windows won't allow that (another antivirus, or a work-managed PC), it says so; add the folder by hand under Windows Security → Virus & threat protection → Manage settings → Exclusions. Running a newer `bb1-setup.exe` updates in place; uninstall from Settings → Apps, which removes the exclusion too.
 2. Pick the Mac and press **Connect** (or type its Tailscale IP or name). On the same Tailscale account it signs in by itself; otherwise the Mac shows a 6-digit code to type in. After that it's remembered.
 3. The Mac needs a build with Windows support (nightly-14 or later): it then sends H.264, which Windows decodes on the GPU.
 
@@ -38,6 +38,7 @@ Rust. `src/core` is the protocol, crypto and connection logic (any platform); `s
 rustup target add x86_64-pc-windows-gnu && brew install mingw-w64   # once
 cargo test                                                           # core checks
 cargo build --release --target x86_64-pc-windows-gnu                 # → target/x86_64-pc-windows-gnu/release/bb1.exe
+brew install makensis && scripts/installer.sh                        # → …/release/bb1-setup.exe (installer, from installer/bb1.nsi)
 ```
 
 `bb1-probe` is a headless test client for any platform: it signs in to a host, receives video and checks it decodes. Against a test host on the same Mac:
@@ -48,10 +49,10 @@ cd ../windows && BB1_SUPPORT_DIR=/tmp/pc cargo run --bin bb1-probe -- --host 127
 ffmpeg -v error -i /tmp/s.h264 -f null -   # no output = every frame decoded
 ```
 
-GitHub Actions builds `bb1.exe` on Windows when this folder changes (`.github/workflows/windows.yml`, artifact `bb1-windows-x64`).
+GitHub Actions builds `bb1.exe` on Windows when this folder changes (`.github/workflows/windows.yml`, artifact `bb1-windows-x64` with `bb1-setup.exe` and the bare `bb1.exe`).
 
 ## Not yet
 
-- Self-update (copy a new `bb1.exe` over the old one for now).
+- Self-update (run a newer `bb1-setup.exe` for now).
 - Signing: unsigned on purpose for now (see the "Run anyway" step above).
 - Macs with a screen wider than 4096 pixels: Windows' H.264 decoder stops at 4096×2304.
