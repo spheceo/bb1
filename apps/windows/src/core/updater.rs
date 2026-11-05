@@ -42,7 +42,9 @@ pub fn build_name(build: i64) -> String {
 }
 
 pub(crate) const FEED: &str = "https://api.github.com/repos/spheceo/bb1/releases?per_page=30";
-const CHECK_EVERY: Duration = Duration::from_secs(10 * 60);
+/// Often enough that the pill offers a nightly within minutes of it coming out (it said "35" well
+/// after 36 was out), well inside GitHub's 60 checks an hour for a computer that isn't signed in.
+const CHECK_EVERY: Duration = Duration::from_secs(3 * 60);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Release {
@@ -231,6 +233,12 @@ impl Updater {
         }
         let me = self.clone();
         std::thread::spawn(move || {
+            // Ask GitHub again first: install the newest build there is, even if the pill was offering
+            // one that's since been overtaken.
+            me.check();
+            let release = me.latest().filter(|r| r.build > release.build).inspect(|r| {
+                logi!("update: {} came out since the pill offered {}; installing that", r.short_name, release.short_name);
+            }).unwrap_or(release);
             if !macs.is_empty() {
                 let names: Vec<String> = macs.iter().map(|(t, _)| t.label.clone()).collect();
                 me.set(Phase::UpdatingMacs(names.clone(), 0.0));
