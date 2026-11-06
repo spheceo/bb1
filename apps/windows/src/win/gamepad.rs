@@ -196,8 +196,12 @@ fn run() {
     let mut session = 0u64;
     let mut scanned_at: Option<Instant> = None;
     loop {
-        let (client, hwnd) = match ACTIVE.lock().unwrap().as_ref() {
-            Some(a) => (a.client.clone(), a.hwnd),
+        // Copied out first so the lock is let go at once: matching on the guard itself would hold it
+        // through the 100 ms sleep below, and this loop takes it again straight after, so the UI
+        // thread's `start` (the next stream) could wait on it forever (bb1 not responding).
+        let active = ACTIVE.lock().unwrap().as_ref().map(|a| (a.client.clone(), a.hwnd));
+        let (client, hwnd) = match active {
+            Some(a) => a,
             None => {
                 // No stream: let go of the controllers (other apps get them back whole).
                 for o in open.drain(..) {

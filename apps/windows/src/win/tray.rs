@@ -170,7 +170,9 @@ pub fn init(share: bool) {
 
 /// Before quitting: stop sharing (without changing the setting) and take the icon down.
 pub fn shutdown() {
-    if let Some(s) = SHARING.lock().unwrap().take() {
+    // Taken out first: stopping must not hold the lock (the host's threads may want it meanwhile).
+    let sharing = SHARING.lock().unwrap().take();
+    if let Some(s) = sharing {
         s.stop();
     }
     let h = HWND_TRAY.load(Relaxed);
@@ -205,13 +207,16 @@ fn set_sharing(on: bool, remember: bool) {
                 notify("bb1 couldn't share this PC", &text);
             }
         }
-    } else if let Some(s) = SHARING.lock().unwrap().take() {
-        s.stop();
-        view(|v| {
-            v.viewers.clear();
-            v.pairing = None;
-            v.problem = None;
-        });
+    } else {
+        let taken = SHARING.lock().unwrap().take(); // not held while stopping
+        if let Some(s) = taken {
+            s.stop();
+            view(|v| {
+                v.viewers.clear();
+                v.pairing = None;
+                v.problem = None;
+            });
+        }
     }
     update_tip();
 }
