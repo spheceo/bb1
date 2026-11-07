@@ -239,6 +239,7 @@ fn state(model: &Shared, directory: &Directory) -> Value {
         .into_iter()
         .map(|e| {
             let preview = directory.preview(&e.name);
+            let known = e.address.as_deref().and_then(|a| store::KnownHost::find(a, &e.name)).or_else(|| store::KnownHost::find("", &e.name));
             json!({
                 "name": e.name,
                 "address": e.address,
@@ -247,6 +248,7 @@ fn state(model: &Shared, directory: &Directory) -> Value {
                 "latencyMs": directory.latency_ms(&e.name),
                 "previewVersion": preview.as_ref().map(|p| p.version),
                 "previewAgo": preview.as_ref().filter(|_| !e.online).map(|p| crate::core::directory::ago(p.at)),
+                "canForget": known.is_some(),
             })
         })
         .collect();
@@ -294,6 +296,7 @@ fn state(model: &Shared, directory: &Directory) -> Value {
             "nightly": s.nightly,
         },
         "logDir": store::log_dir().display().to_string(),
+        "pairedCount": crate::core::host::paired_device_count(),
     })
 }
 
@@ -381,6 +384,20 @@ fn command(model: &Shared, directory: &Directory, proxy: &EventLoopProxy<UserEve
             let _ = Command::new("xdg-open").arg(store::log_dir()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
         }
         "dismissEnded" => model.lock().unwrap().last_ended = None,
+        "forgetPaired" => crate::core::host::forget_paired_devices(),
+        "forgetComputer" => {
+            if let Some(k) = store::KnownHost::find("", &s("name")) {
+                store::KnownHost::forget(&k.host_id);
+                logi!("ui: forgot the pairing with {}", k.name);
+            }
+            directory.refresh_now();
+        }
+        "cancelPairing" => {
+            if let Share::On(sh) = &model.lock().unwrap().share {
+                sh.host().cancel_pairing();
+            }
+            model.lock().unwrap().pairing = None;
+        }
         other => logi!("ui: unknown command {other}"),
     }
     let _ = proxy.send_event(UserEvent::Push);

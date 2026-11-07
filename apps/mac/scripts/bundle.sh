@@ -10,6 +10,14 @@ set -euo pipefail
 root=${0:A:h:h}
 cd "$root"
 
+# The main window is the shared React UI (apps/ui), built into one self-contained page.
+ui_page="../ui/dist/index.html"
+if [[ ! -f "$ui_page" ]]; then
+  echo "!! The shared UI isn't built: ${root:h}/ui/dist/index.html is missing." >&2
+  echo "!! Build it first: cd apps/ui && bun install && bun run build" >&2
+  exit 1
+fi
+
 echo "==> Building bb1 (release)"
 swift build -c release --product bb1
 
@@ -24,6 +32,8 @@ build=$(git rev-list --count HEAD 2>/dev/null || echo 1)
 # A proper release says so (the app shows "bb1 v0.0.1" instead of "bb1 nightly-N").
 [[ -n "${BB1_RELEASE:-}" ]] && /usr/libexec/PlistBuddy -c "Add :BB1Release bool true" "$app/Contents/Info.plist"
 cp "Resources/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"   # made by scripts/make-icon.swift
+mkdir -p "$app/Contents/Resources/ui"
+cp "$ui_page" "$app/Contents/Resources/ui/index.html"   # loaded by WebDashboard.swift
 
 # Developer ID (Apple-issued) when it's installed: hardened runtime and a secure timestamp, which
 # notarization needs. Otherwise the local certificate. BB1_SIGN_IDENTITY overrides both.

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Gamepad2, Keyboard, Monitor, MousePointer2, Plus, Settings as Gear, X } from "lucide-react";
+import { ArrowLeft, Download, Gamepad2, Keyboard, Monitor, MoreHorizontal, MousePointer2, Plus, Settings as Gear, X } from "lucide-react";
 import { onState, previewUrl, send } from "./bridge";
 import type { Computer, ModifierLayout, State, Viewer } from "./types";
 
@@ -28,6 +28,7 @@ function Header({ state, page, setPage }: { state: State; page: string; setPage:
         <span className="build">{state.build}</span>
       </div>
       <div className="header-actions">
+        {state.update && <UpdateButton u={state.update} />}
         <label className="share-switch" title="Let your other computers see and control this one">
           <span>Share this {noun(state)}</span>
           <Toggle on={sharing} onChange={(on) => send({ cmd: "setSharing", on })} />
@@ -43,6 +44,25 @@ function Header({ state, page, setPage }: { state: State; page: string; setPage:
         )}
       </div>
     </header>
+  );
+}
+
+function UpdateButton({ u }: { u: NonNullable<State["update"]> }) {
+  const title = u.also?.length ? `Updates ${u.also.join(", ")} first, then this one` : undefined;
+  if (u.kind === "busy") {
+    return (
+      <div className="update busy" title={title}>
+        <div className="update-progress" style={{ width: `${Math.round((u.progress ?? 0) * 100)}%` }} />
+        <span>{u.label}</span>
+      </div>
+    );
+  }
+  const cmd = u.kind === "done" ? "dismissUpdate" : "update";
+  return (
+    <button className={`update ${u.kind}`} title={u.kind === "failed" ? "Try again" : title} onClick={() => send({ cmd })}>
+      {u.kind === "offer" && <Download size={14} />}
+      {u.label}
+    </button>
   );
 }
 
@@ -95,7 +115,7 @@ function Computers({ state }: { state: State }) {
 }
 
 function Tile({ c, state }: { c: Computer; state: State }) {
-  const busy = state.stream !== null;
+  const busy = state.stream != null;
   const connecting = state.stream?.label === c.name;
   const status = c.online
     ? [c.latencyMs !== undefined ? `${Math.round(c.latencyMs)} ms` : null, c.quiet ? "Ready" : "Asks for a code"].filter(Boolean).join(" · ")
@@ -103,6 +123,9 @@ function Tile({ c, state }: { c: Computer; state: State }) {
       ? `Offline · seen ${c.previewAgo}`
       : "Offline";
   const connect = () => c.address && !busy && send({ cmd: "connect", address: c.address, label: c.name });
+  const [menu, setMenu] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const hasMenu = c.canForget || c.canRename || (c.routes?.length ?? 0) > 1 || c.canUpdate;
   return (
     <div className={`tile ${c.online ? "" : "offline"}`} onDoubleClick={connect}>
       <div className="screen">
@@ -114,7 +137,44 @@ function Tile({ c, state }: { c: Computer; state: State }) {
           </div>
         )}
         {connecting && <div className="screen-badge">{state.stream?.connected ? "Connected" : "Connecting…"}</div>}
+        {c.updating !== undefined && <div className="screen-badge">Updating · {Math.round(c.updating * 100)}%</div>}
+        {c.canUpdate && c.updating === undefined && !connecting && (
+          <button className="screen-badge action" onClick={() => send({ cmd: "updateComputer", name: c.name })}>
+            Update
+          </button>
+        )}
+        {hasMenu && (
+          <button className="tile-more" title="More" onClick={() => setMenu(!menu)}>
+            <MoreHorizontal size={16} />
+          </button>
+        )}
+        {menu && (
+          <Menu onClose={() => setMenu(false)}>
+            {c.online && c.address && <MenuItem label="Connect" onClick={connect} />}
+            {c.routes?.includes("tailscale") && c.routes.includes("home") && (
+              <>
+                <MenuItem label="Connect over the home network" checked={c.route === "home"} onClick={() => send({ cmd: "setRoute", name: c.name, route: "home" })} />
+                <MenuItem label="Connect over Tailscale" checked={c.route === "tailscale"} onClick={() => send({ cmd: "setRoute", name: c.name, route: "tailscale" })} />
+              </>
+            )}
+            {c.canUpdate && <MenuItem label="Update bb1 there" onClick={() => send({ cmd: "updateComputer", name: c.name })} />}
+            {c.canRename && <MenuItem label="Rename…" onClick={() => setRenaming(true)} />}
+            {c.canForget && <MenuItem label="Forget pairing" danger onClick={() => send({ cmd: "forgetComputer", name: c.name })} />}
+          </Menu>
+        )}
       </div>
+      {renaming && (
+        <Prompt
+          title={`Rename ${c.name}`}
+          detail="The name you see for it on this computer."
+          initial={c.name}
+          ok="Rename"
+          onDone={(v) => {
+            setRenaming(false);
+            if (v !== null) send({ cmd: "renameComputer", name: c.name, newName: v });
+          }}
+        />
+      )}
       <div className="tile-footer">
         <div className="tile-text">
           <div className="tile-name">
@@ -154,6 +214,7 @@ function SharingPanel({ state }: { state: State }) {
       <div className="card sharing failed">
         <div className="sharing-head">Couldn't share this {noun(state)}</div>
         <p className="muted">{s.error}</p>
+        {s.note && <p className="muted">{s.note}</p>}
         <button className="pill secondary" onClick={() => send({ cmd: "setSharing", on: true })}>
           Try again
         </button>
@@ -171,7 +232,12 @@ function SharingPanel({ state }: { state: State }) {
           <div>
             <b>{s.pairing.device}</b> wants to connect. Type this code on it:
           </div>
-          <div className="code">{s.pairing.code}</div>
+          <div className="pairing-right">
+            <div className="code">{s.pairing.code}</div>
+            <button className="icon-button small" title="Cancel pairing" onClick={() => send({ cmd: "cancelPairing" })}>
+              <X size={14} />
+            </button>
+          </div>
         </div>
       )}
       {s.viewers.map((v) => (
@@ -264,6 +330,65 @@ function CodeEntry({ host }: { host: string }) {
   );
 }
 
+function Prompt({ title, detail, initial, ok, onDone }: { title: string; detail: string; initial: string; ok: string; onDone: (v: string | null) => void }) {
+  const [value, setValue] = useState(initial);
+  return (
+    <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onDone(null)}>
+      <div className="modal">
+        <h2>{title}</h2>
+        <p className="muted">{detail}</p>
+        <input
+          className="text"
+          autoFocus
+          value={value}
+          onFocus={(e) => e.target.select()}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && value.trim()) onDone(value.trim());
+            if (e.key === "Escape") onDone(null);
+          }}
+        />
+        <div className="modal-actions">
+          <button className="pill secondary" onClick={() => onDone(null)}>
+            Cancel
+          </button>
+          <button className="pill primary" disabled={!value.trim()} onClick={() => onDone(value.trim())}>
+            {ok}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Menu({ onClose, children }: { onClose: () => void; children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const away = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && onClose();
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    setTimeout(() => document.addEventListener("mousedown", away));
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("mousedown", away);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [onClose]);
+  return (
+    <div className="menu" ref={ref} onClick={onClose}>
+      {children}
+    </div>
+  );
+}
+
+function MenuItem({ label, onClick, checked, danger }: { label: string; onClick: () => void; checked?: boolean; danger?: boolean }) {
+  return (
+    <button className={`menu-item ${danger ? "danger" : ""}`} onClick={onClick}>
+      <span className="menu-check">{checked ? "✓" : ""}</span>
+      {label}
+    </button>
+  );
+}
+
 function AddByAddress({ onClose }: { onClose: () => void }) {
   const [address, setAddress] = useState("");
   const go = () => {
@@ -308,14 +433,49 @@ function SettingsPage({ state }: { state: State }) {
   const set = (settings: Partial<State["settings"]>) => send({ cmd: "setSettings", settings });
   const sharing = state.sharing.state === "on" || state.sharing.state === "starting";
   const superName = state.platform === "windows" ? "Windows key" : "Super";
+  const shareDetail = sharing
+    ? state.platform === "linux"
+      ? "On while bb1 is open"
+      : state.app?.openAtLogin
+        ? "On, and starts at login"
+        : "On"
+    : state.sharing.state === "failed"
+      ? state.sharing.error
+      : "Off";
   return (
     <div className="settings">
       <h1>Settings</h1>
-      <Section title="Sharing" detail={`Let your other computers see and control this ${noun(state)}.`}>
-        <Row title={`Share this ${noun(state)}`} detail={sharing ? (state.platform === "linux" ? "On while bb1 is open" : "On") : "Off"}>
+      <Section title="Sharing" detail={`Let your other computers see and control this ${noun(state)}.${state.sharing.note ? ` ${state.sharing.note}` : ""}`}>
+        <Row title={`Share this ${noun(state)}`} detail={shareDetail}>
           <Toggle on={sharing} onChange={(on) => send({ cmd: "setSharing", on })} />
         </Row>
+        {state.permissions && !state.permissions.screenRecording && (
+          <Row title="Screen Recording" detail="Needed so your other computers can see this screen">
+            <button className="pill primary small" onClick={() => send({ cmd: "fixPermission", which: "screenRecording" })}>
+              Allow…
+            </button>
+          </Row>
+        )}
+        {state.permissions && !state.permissions.accessibility && (
+          <Row title="Accessibility" detail="Needed so your other computers can control this one">
+            <button className="pill primary small" onClick={() => send({ cmd: "fixPermission", which: "accessibility" })}>
+              Allow…
+            </button>
+          </Row>
+        )}
+        {state.controllerDriver && <ControllerRow d={state.controllerDriver} />}
+        {state.sharing.addresses && <Row title="Addresses" detail={state.sharing.addresses} />}
       </Section>
+      {state.mutedApps && (
+        <Section title="Sound" detail="What your other computers hear from this one. Browsers are muted whole: every tab's sound comes from one process.">
+          {state.mutedApps.length === 0 && <Row title="Don't share sound from" detail="None of the apps bb1 can leave out are on this computer" />}
+          {state.mutedApps.map((a) => (
+            <Row key={a.id} title={a.name} detail={a.muted ? "Its sound isn't shared" : "Its sound is shared"}>
+              <Toggle on={!a.muted} onChange={(on) => send({ cmd: "setMuted", id: a.id, muted: !on })} />
+            </Row>
+          ))}
+        </Section>
+      )}
       <Section title="Who can connect" detail="Computers you've paired, or on your Tailscale account, get in without asking.">
         <Row title="Tailscale sign-in" detail="Computers on your Tailscale account">
           <Toggle on={s.allowTailscale} onChange={(on) => set({ allowTailscale: on })} />
@@ -323,6 +483,15 @@ function SettingsPage({ state }: { state: State }) {
         <Row title="Pairing code" detail="A new computer types a 6-digit code shown here">
           <Toggle on={s.allowPairing} onChange={(on) => set({ allowPairing: on })} />
         </Row>
+        {state.pairedCount !== undefined && (
+          <Row title="Paired computers" detail={state.pairedCount === 0 ? "None yet" : `${state.pairedCount} sign in without a code. Forgetting makes them pair again.`}>
+            {state.pairedCount > 0 && (
+              <button className="pill secondary small" onClick={() => send({ cmd: "forgetPaired" })}>
+                Forget all
+              </button>
+            )}
+          </Row>
+        )}
       </Section>
       {state.platform !== "mac" && (
         <Section title="Connecting" detail="When you use another computer from this one. Applies to the next connection.">
@@ -346,8 +515,35 @@ function SettingsPage({ state }: { state: State }) {
           <Row title="Shortcuts" detail="In the stream window: Ctrl+Alt+Enter full screen · Ctrl+Alt+← / → the other screen" />
         </Section>
       )}
+      {state.app && (
+        <Section title="App" detail="How bb1 sits on this Mac.">
+          <Row title="Open at login">
+            <Toggle on={state.app.openAtLogin} onChange={(on) => send({ cmd: "setApp", app: { openAtLogin: on } })} />
+          </Row>
+          <Row title="Keep running in the menu bar" detail="Closing the window doesn't quit">
+            <Toggle on={state.app.keepRunning} onChange={(on) => send({ cmd: "setApp", app: { keepRunning: on } })} />
+          </Row>
+          <Row title="Dock icon">
+            <Segmented<"always" | "open" | "never">
+              value={state.app.dock}
+              options={[
+                ["always", "Always"],
+                ["open", "While open"],
+                ["never", "Never"],
+              ]}
+              onChange={(v) => send({ cmd: "setApp", app: { dock: v } })}
+            />
+          </Row>
+        </Section>
+      )}
       <Section title="Updates" detail={state.platform === "linux" ? "On Linux, bb1 is built from source for now." : "New builds arrive inside the app."}>
-        <Row title="bb1" detail={state.build} />
+        <Row title="bb1" detail={state.updateStatus ? `${state.build} · ${state.updateStatus.text}` : state.build}>
+          {state.updateStatus?.canCheck && (
+            <button className="pill secondary small" onClick={() => send({ cmd: "checkUpdates" })}>
+              Check now
+            </button>
+          )}
+        </Row>
         {state.platform !== "linux" && (
           <Row title="Channel" detail={s.nightly ? "Every nightly, as soon as it's out" : "Releases only"}>
             <Segmented<"stable" | "nightly">
@@ -369,6 +565,21 @@ function SettingsPage({ state }: { state: State }) {
         </Row>
       </Section>
     </div>
+  );
+}
+
+function ControllerRow({ d }: { d: NonNullable<State["controllerDriver"]> }) {
+  const detail = d.state === "failed" ? `Couldn't install the controller driver: ${d.error ?? ""}` : "Friends' controllers become Xbox controllers here (needs the ViGEmBus driver)";
+  return (
+    <Row title="Game controllers" detail={detail}>
+      {d.state === "ready" && <span className="muted small-text">Ready</span>}
+      {(d.state === "downloading" || d.state === "installing") && <span className="muted small-text">{d.state === "downloading" ? "Downloading…" : "Installing…"}</span>}
+      {(d.state === "missing" || d.state === "failed") && (
+        <button className="pill primary small" onClick={() => send({ cmd: "installControllerDriver" })}>
+          {d.state === "missing" ? "Install driver" : "Try again"}
+        </button>
+      )}
+    </Row>
   );
 }
 

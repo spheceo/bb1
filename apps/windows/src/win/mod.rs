@@ -16,3 +16,4 @@ mod stream;
 pub(crate) mod tray;
 mod panels;
 pub(crate) mod util;
+mod webui;

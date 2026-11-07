@@ -363,6 +363,19 @@ enum DriverInstall {
 
 static DRIVER_INSTALL: std::sync::Mutex<DriverInstall> = std::sync::Mutex::new(DriverInstall::Idle);
 
+/// For the web UI: "ready" | "missing" | "downloading" | "installing" | "failed", and why it failed.
+pub(crate) fn driver_status() -> (&'static str, Option<String>) {
+    if crate::host::input::controller_driver_installed() {
+        return ("ready", None);
+    }
+    match DRIVER_INSTALL.lock().unwrap().clone() {
+        DriverInstall::Idle => ("missing", None),
+        DriverInstall::Downloading => ("downloading", None),
+        DriverInstall::Installing => ("installing", None),
+        DriverInstall::Failed(e) => ("failed", Some(e)),
+    }
+}
+
 /// "Game controllers": Ready once ViGEmBus is installed, otherwise a pill that installs it.
 fn controllers_row(g: &mut Gfx, x: f32, y: f32, w: f32, acts: &mut Acts, hover: Option<&Act>, label: &dyn Fn(&mut Gfx, f32, &str, &str)) {
     let detail = "Friends' controllers become Xbox controllers on this PC.";
@@ -398,7 +411,7 @@ fn controllers_row(g: &mut Gfx, x: f32, y: f32, w: f32, acts: &mut Acts, hover: 
 }
 
 /// The official ViGEmBus installer, from its GitHub releases (it has its own window and asks for admin).
-fn install_controller_driver() {
+pub(crate) fn install_controller_driver() {
     {
         let mut st = DRIVER_INSTALL.lock().unwrap();
         if matches!(*st, DriverInstall::Downloading | DriverInstall::Installing) {
@@ -469,7 +482,7 @@ fn download_and_run_vigem(started: impl Fn()) -> Result<(), String> {
     Ok(())
 }
 
-fn open_folder(path: &std::path::Path) {
+pub(crate) fn open_folder(path: &std::path::Path) {
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
     let p = windows::core::HSTRING::from(path.as_os_str());

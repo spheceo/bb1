@@ -33,6 +33,7 @@ Rust. `src/core` is the protocol, crypto and connection logic (any platform); `s
 
 | Part | Windows API |
 |---|---|
+| Main window | The shared React UI ([apps/ui](../ui/README.md)) in WebView2 (wry, `src/win/webui.rs`); without WebView2 the window is drawn natively as before (`src/win/connect.rs`; `BB1_NATIVE_WINDOW=1` forces it) |
 | Decode | Media Foundation H.264 decoder, on the GPU through Direct3D 11 (falls back to the CPU) |
 | Display | Direct3D 11 flip-model swap chain, NV12 → RGB in a pixel shader, letterboxed |
 | Keyboard | Low-level keyboard hook; scan codes → Mac key codes (`src/core/keymap.rs`) |

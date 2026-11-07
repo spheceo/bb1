@@ -44,6 +44,12 @@ jobs:
           NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
           NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
         run: scripts/ci-signing.sh
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: The window's UI (apps/ui, React), which BB1.app bundles
+        working-directory: apps/ui
+        run: bun install --frozen-lockfile && bun run build
       - name: Build, sign, package, and verify
         run: scripts/release.sh --ci
       - name: Keep verified deliverables

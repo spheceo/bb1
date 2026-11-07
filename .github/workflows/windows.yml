@@ -3,9 +3,9 @@ name: Windows client
 on:
   push:
     branches: [main]
-    paths: ['apps/windows/**', 'protocol/**', '.github/workflows/windows.yml']
+    paths: ['apps/windows/**', 'apps/ui/**', 'protocol/**', '.github/workflows/windows.yml']
   pull_request:
-    paths: ['apps/windows/**', 'protocol/**', '.github/workflows/windows.yml']
+    paths: ['apps/windows/**', 'apps/ui/**', 'protocol/**', '.github/workflows/windows.yml']
   workflow_dispatch:
   workflow_call:  # release.yml builds it for every nightly and release
 
@@ -22,6 +22,12 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0  # build number = commit count
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: The window's UI (apps/ui, React), which bb1.exe embeds
+        working-directory: apps/ui
+        run: bun install --frozen-lockfile && bun run build
       - name: Protocol, crypto and key-map checks (against protocol/vectors.json from the Mac app)
         run: cargo test --locked
       - name: Build bb1.exe (unsigned)

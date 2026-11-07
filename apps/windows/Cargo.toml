@@ -62,6 +62,8 @@ windows = { version = "0.62.2", features = [
 ] }
 windows-numerics = "0.3.1"
 vigem-client = { version = "0.1.4", features = ["unstable_xtarget_notification"] }
+# The main window: the shared React UI (apps/ui) in WebView2.
+wry = "0.57.1"
 
 [target."cfg(target_os = \"linux\")".dependencies]
 # Linux app (src/linux): SDL3 stream window, FFmpeg's libavcodec (decode; host encode through NVENC

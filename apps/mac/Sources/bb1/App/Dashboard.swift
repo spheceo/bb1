@@ -26,6 +26,9 @@ enum MacNames {
 }
 
 /// bb1's main window: Your Macs (live screens of your other Macs), with Settings behind the gear.
+///
+/// Shows the shared React UI (apps/ui, see WebDashboard) when it's there and loads; otherwise, or with
+/// `BB1_NATIVE_DASHBOARD=1`, the native pages below (ComputersPage, SettingsPage).
 final class Dashboard: NSObject, NSWindowDelegate {
     enum Page { case computers, settings }
 
@@ -35,6 +38,8 @@ final class Dashboard: NSObject, NSWindowDelegate {
     private let content = NSView()
     private var computers: ComputersPage?
     private var settingsPage: SettingsPage?
+    /// The web UI while it works; nil shows the native pages.
+    private var web: WebDashboard?
     private var page: Page = .computers
     private var timer: Timer?
     var onClosed: (() -> Void)?
@@ -50,12 +55,6 @@ final class Dashboard: NSObject, NSWindowDelegate {
         window.title = "bb1"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
-        // An empty toolbar makes the title bar taller, so the window buttons (and the header that lines up
-        // with them) sit in a roomy strip instead of against the top edge.
-        let toolbar = NSToolbar(identifier: "bb1.dashboard")
-        toolbar.showsBaselineSeparator = false
-        window.toolbar = toolbar
-        window.toolbarStyle = .unified
         window.appearance = NSAppearance(named: .darkAqua)
         window.backgroundColor = Style.background
         window.isReleasedWhenClosed = false
@@ -66,18 +65,55 @@ final class Dashboard: NSObject, NSWindowDelegate {
         window.center()
         directory.onChange = { [weak self] _ in self?.refresh() }
         directory.start()
-        display(ProcessInfo.processInfo.environment["BB1_DASHBOARD_PAGE"] == "settings" ? .settings : .computers)
+        let first: Page = ProcessInfo.processInfo.environment["BB1_DASHBOARD_PAGE"] == "settings" ? .settings : .computers
+        page = first
+        if let web = WebDashboard(dashboard: self, page: first) {
+            self.web = web
+            web.install(in: content, window: window)
+        } else {
+            useNativeChrome()
+            display(first)
+        }
+    }
+
+    /// The native pages: an empty toolbar makes the title bar taller, so the window buttons (and the header
+    /// that lines up with them) sit in a roomy strip instead of against the top edge.
+    private func useNativeChrome() {
+        let toolbar = NSToolbar(identifier: "bb1.dashboard")
+        toolbar.showsBaselineSeparator = false
+        window.toolbar = toolbar
+        window.toolbarStyle = .unified
+        window.backgroundColor = Style.background
+    }
+
+    /// The web UI didn't load or keeps crashing: the native pages take over (until bb1 restarts).
+    func fallBackToNative(_ why: String) {
+        guard let web else { return }
+        Log.info("dashboard: \(why); showing the native dashboard instead")
+        web.remove()
+        self.web = nil
+        useNativeChrome()
+        display(page)
+        if window.isVisible {
+            timer?.invalidate()
+            timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refresh() }
+        }
     }
 
     func show(_ page: Page? = nil, message: String? = nil) {
-        display(page ?? self.page)
-        if let message { computers?.setMessage(message) }
+        // The web UI remembers which of its pages it's on; only switch it when asked to.
+        if web == nil || page != nil { display(page ?? self.page) }
+        if let message {
+            if let web { web.show(message: message) } else { computers?.setMessage(message) }
+        }
         window.makeKeyAndOrderFront(nil)
-        window.makeFirstResponder(nil)
+        if let web { web.focus() } else { window.makeFirstResponder(nil) }
         NSApp.activate(ignoringOtherApps: true)
         Updater.shared.checkIfStale()
+        web?.windowShown()
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refresh() }
+        // The web UI gets the state once a second (latencies, viewers), as on Linux.
+        timer = Timer.scheduledTimer(withTimeInterval: web == nil ? 2 : 1, repeats: true) { [weak self] _ in self?.refresh() }
     }
 
     func hide() {
@@ -89,7 +125,9 @@ final class Dashboard: NSObject, NSWindowDelegate {
 
     /// Re-read what's shown (host status, discovered Macs). Settings is only rebuilt on demand.
     func refresh() {
-        guard window.isVisible, page == .computers else { return }
+        guard window.isVisible else { return }
+        if let web { web.refresh(); return }
+        guard page == .computers else { return }
         computers?.reload()
     }
 
@@ -98,6 +136,12 @@ final class Dashboard: NSObject, NSWindowDelegate {
 
     private func display(_ p: Page) {
         page = p
+        if let web {
+            // The page switches between its own two pages; the screenshots keep coming either way.
+            web.show(p)
+            refresh()
+            return
+        }
         if p != .computers { HostPreviews.shared.stopAll() }
         content.subviews.forEach { $0.removeFromSuperview() }
         let view: NSView
@@ -222,7 +266,7 @@ final class ComputersPage: NSView {
     private var brandLeading: NSLayoutConstraint!
     private var cornerCenter: NSLayoutConstraint!
     /// Per Mac: connect over the home network instead of Tailscale (Tailscale is the default).
-    private static var preferHome: [String: Bool] {
+    static var preferHome: [String: Bool] {
         get { UserDefaults.standard.dictionary(forKey: "bb1.preferHome") as? [String: Bool] ?? [:] }
         set { UserDefaults.standard.set(newValue, forKey: "bb1.preferHome") }
     }
@@ -515,7 +559,7 @@ final class ComputersPage: NSView {
         }
     }
 
-    private static func usesTailscale(_ e: HostDirectory.Entry) -> Bool {
+    static func usesTailscale(_ e: HostDirectory.Entry) -> Bool {
         e.tailscaleIP != nil && (e.lan == nil || preferHome[e.name] != true)
     }
 

@@ -9,19 +9,30 @@ final class HostRole: NSObject {
     var showDashboard: (() -> Void)?
 
     private let pairingPrompt = PairingPrompt()
+    /// A Mac pairing right now and the code it's shown (the web dashboard shows it too).
+    private(set) var pairing: (device: String, code: String)?
 
     init(options: HostOptions) {
         host = HostController(options: options)
         super.init()
         host.onChange = { [weak self] in self?.onChange?() }
-        host.onPairingCode = { [weak self] device, code in self?.pairingPrompt.show(device: device, code: code) }
-        host.onPairingFinished = { [weak self] _ in self?.pairingPrompt.dismiss() }
+        host.onPairingCode = { [weak self] device, code in
+            self?.pairing = (device: device, code: code)
+            self?.pairingPrompt.show(device: device, code: code)
+            self?.onChange?()
+        }
+        host.onPairingFinished = { [weak self] _ in
+            self?.pairing = nil
+            self?.pairingPrompt.dismiss()
+            self?.onChange?()
+        }
         pairingPrompt.onCancel = { [weak self] in self?.host.cancelPairing() }
     }
 
     func start() { host.start() }
 
     func stop() {
+        pairing = nil
         pairingPrompt.dismiss()
         host.stop()
     }

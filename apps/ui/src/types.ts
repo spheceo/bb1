@@ -17,6 +17,16 @@ export interface Computer {
   previewVersion?: number;
   /** "2 min ago": when the screenshot was taken, for offline computers. */
   previewAgo?: string;
+  /** It's paired with this one, so it can be forgotten (it pairs again next time). */
+  canForget?: boolean;
+  /** It runs an older bb1 than the newest: offer to update it (Mac). */
+  canUpdate?: boolean;
+  /** Mac: how to reach it when both work, and whether it can be renamed here. */
+  route?: "home" | "tailscale";
+  routes?: ("home" | "tailscale")[];
+  canRename?: boolean;
+  /** Being updated right now (0…1). */
+  updating?: number;
 }
 
 export interface Stream {
@@ -38,6 +48,10 @@ export interface Viewer {
 export interface Sharing {
   state: "off" | "starting" | "on" | "failed";
   error?: string;
+  /** What sharing needs here ("Needs an NVIDIA graphics card"). */
+  note?: string;
+  /** This computer's addresses, to connect by hand. */
+  addresses?: string;
   /** Someone is pairing: show them this code. */
   pairing?: { device: string; code: string };
   viewers: Viewer[];
@@ -55,6 +69,21 @@ export interface Settings {
   nightly: boolean;
 }
 
+/** The update button at the top: "Update to nightly-41", "Updating · 40%", "Updated to …". */
+export interface UpdatePill {
+  kind: "offer" | "busy" | "done" | "failed";
+  label: string;
+  progress?: number;
+  /** Also updates these computers first (they run an older bb1). */
+  also?: string[];
+}
+
+export interface MutedApp {
+  id: string;
+  name: string;
+  muted: boolean;
+}
+
 export interface State {
   platform: Platform;
   /** This computer's name. */
@@ -69,6 +98,19 @@ export interface State {
   sharing: Sharing;
   settings: Settings;
   logDir: string;
+  update?: UpdatePill;
+  /** Settings → Updates: "Up to date", "nightly-41 is ready", … */
+  updateStatus?: { text: string; canCheck: boolean };
+  /** Computers that sign in here without a code (Settings → Forget all). */
+  pairedCount?: number;
+  /** Apps whose sound isn't shared (Windows, Mac). */
+  mutedApps?: MutedApp[];
+  /** Windows: the ViGEmBus driver friends' controllers need. */
+  controllerDriver?: { state: "ready" | "missing" | "downloading" | "installing" | "failed"; error?: string };
+  /** Mac: what sharing needs from System Settings. */
+  permissions?: { screenRecording: boolean; accessibility: boolean };
+  /** Mac: how bb1 sits on this computer. */
+  app?: { openAtLogin: boolean; keepRunning: boolean; dock: "always" | "open" | "never" };
 }
 
 export type Command =
@@ -81,4 +123,20 @@ export type Command =
   | { cmd: "setSettings"; settings: Partial<Settings> }
   | { cmd: "openLogs" }
   | { cmd: "dismissEnded" }
-  | { cmd: "ready" };
+  | { cmd: "ready" }
+  // Updates
+  | { cmd: "update" }
+  | { cmd: "updateComputer"; name: string }
+  | { cmd: "checkUpdates" }
+  | { cmd: "dismissUpdate" }
+  // A computer's menu
+  | { cmd: "forgetComputer"; name: string }
+  | { cmd: "renameComputer"; name: string; newName: string }
+  | { cmd: "setRoute"; name: string; route: "home" | "tailscale" }
+  // Sharing
+  | { cmd: "cancelPairing" }
+  | { cmd: "forgetPaired" }
+  | { cmd: "setMuted"; id: string; muted: boolean }
+  | { cmd: "installControllerDriver" }
+  | { cmd: "fixPermission"; which: "screenRecording" | "accessibility" }
+  | { cmd: "setApp"; app: Partial<NonNullable<State["app"]>> };

@@ -280,6 +280,7 @@ pub fn drain_events() {
                     continue;
                 }
                 stream::status(&text, connected);
+                crate::win::webui::set_connected(connected);
                 connect::set_status(&text);
             }
             UiEvent::Ended(generation, reason) => {

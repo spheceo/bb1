@@ -108,6 +108,10 @@ fn register(class: PCWSTR, proc: WNDPROC) {
 }
 
 pub fn create() -> HWND {
+    // The shared React UI when WebView2 is there; otherwise this module draws the window.
+    if let Some(hwnd) = crate::win::webui::create() {
+        return hwnd;
+    }
     register(w!("bb1Home"), Some(wndproc));
     unsafe {
         let instance = GetModuleHandleW(None).unwrap();
@@ -165,15 +169,24 @@ pub fn create() -> HWND {
 }
 
 pub fn refresh() {
+    if crate::win::webui::active() {
+        return crate::win::webui::refresh();
+    }
     invalidate();
 }
 
 pub fn set_status(text: &str) {
+    if crate::win::webui::active() {
+        return crate::win::webui::set_status(text);
+    }
     with(|h| h.message = text.to_string());
     invalidate();
 }
 
 pub fn hide() {
+    if crate::win::webui::active() {
+        return crate::win::webui::hide();
+    }
     let Some((hwnd, dir)) = with(|h| (h.hwnd, h.directory.clone())) else { return };
     dir.set_active(false);
     unsafe {
@@ -182,6 +195,9 @@ pub fn hide() {
 }
 
 pub fn show(message: &str) {
+    if crate::win::webui::active() {
+        return crate::win::webui::show(message);
+    }
     let Some((hwnd, dir)) = with(|h| {
         h.message = message.to_string();
         (h.hwnd, h.directory.clone())
@@ -201,6 +217,9 @@ pub fn show(message: &str) {
 /// Show the window on top of whatever's in front (a pairing code must be seen). Windows only lets a
 /// background app take the foreground in some cases, so it's also made topmost for a moment.
 pub fn bring_forward() {
+    if crate::win::webui::active() {
+        return crate::win::webui::bring_forward();
+    }
     let Some((hwnd, dir)) = with(|h| {
         h.page = Page::Macs;
         h.scroll = 0.0;
@@ -742,6 +761,9 @@ fn ask_address() {
 
 /// Asks for the 6-digit code the Mac shows; `reply` gets it (None = cancelled).
 pub fn ask_code(host: &str, reply: Sender<Option<String>>) {
+    if crate::win::webui::active() {
+        return crate::win::webui::ask_code(host, reply);
+    }
     open_prompt(PromptKind::Code(Some(reply)), format!("Pair with {host}"), "Type the 6-digit code shown on the Mac.".into(), "Pair");
 }
 
@@ -950,7 +972,7 @@ unsafe extern "system" fn prompt_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
 }
 
 /// Online Macs that sign in quietly and run an older build than the newest release (with their build).
-fn macs_behind(dir: &Directory, updater: &Updater) -> Vec<(Target, i64)> {
+pub(crate) fn macs_behind(dir: &Directory, updater: &Updater) -> Vec<(Target, i64)> {
     let Some(latest) = updater.latest() else { return Vec::new() };
     dir.entries()
         .into_iter()
@@ -987,7 +1009,7 @@ fn start_update() {
 }
 
 /// Run the installer quietly; it asks for admin, then opens the new bb1 when it's done.
-fn launch_installer(path: &std::path::Path) -> Result<(), String> {
+pub(crate) fn launch_installer(path: &std::path::Path) -> Result<(), String> {
     use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
     use windows::Win32::UI::Shell::ShellExecuteW;
     unsafe {

@@ -700,3 +700,124 @@ main::-webkit-scrollbar-thumb {
     align-items: flex-start;
   }
 }
+
+/* MARK: Updates, menus */
+
+.update {
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 99px;
+  padding: 6px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  white-space: nowrap;
+}
+
+.update.offer {
+  background: #fff;
+  color: #0b0b0c;
+  border-color: transparent;
+}
+
+.update.failed {
+  color: var(--warn);
+}
+
+.update.done {
+  color: var(--online);
+}
+
+.update.busy span {
+  position: relative;
+}
+
+.update-progress {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: rgba(46, 217, 135, 0.22);
+  transition: width 0.3s;
+}
+
+.screen-badge.action {
+  left: auto;
+  right: 48px;
+  border: none;
+  color: #0b0b0c;
+  background: #fff;
+}
+
+.tile-more {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 99px;
+  border: none;
+  background: rgba(10, 10, 12, 0.6);
+  backdrop-filter: blur(10px);
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.tile:hover .tile-more,
+.tile-more:focus-visible {
+  opacity: 1;
+}
+
+.menu {
+  position: absolute;
+  top: 44px;
+  right: 8px;
+  min-width: 230px;
+  padding: 5px;
+  border-radius: 12px;
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.55);
+  z-index: 5;
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: none;
+  padding: 7px 10px 7px 4px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.menu-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.menu-item.danger {
+  color: var(--warn);
+}
+
+.menu-check {
+  width: 16px;
+  text-align: center;
+  color: var(--online);
+}
+
+.pairing-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.small-text {
+  font-size: 12.5px;
+}

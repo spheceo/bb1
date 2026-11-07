@@ -203,6 +203,11 @@ fn paired_save(list: &[PairedDevice]) {
     }
 }
 
+/// How many computers sign in here without a code.
+pub fn paired_device_count() -> usize {
+    paired_load().len()
+}
+
 pub fn forget_paired_devices() {
     paired_save(&[]);
 }

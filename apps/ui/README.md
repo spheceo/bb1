@@ -16,7 +16,7 @@ the app sends its whole state (`State` in `src/types.ts`) through `window.bb1Rec
 | App | Web view | Bridge |
 |---|---|---|
 | Linux | WebKitGTK (wry + tao) | `apps/windows/src/linux/ui.rs` |
-| Windows | WebView2 (wry + tao) | not yet: the Windows app still draws its own window |
-| Mac | WKWebView | not yet: the Mac app still uses its AppKit dashboard |
+| Windows | WebView2 (wry) | `apps/windows/src/win/webui.rs` (native window without WebView2) |
+| Mac | WKWebView | `apps/mac/Sources/bb1/App/WebDashboard.swift` (native dashboard as fallback) |
 
 Live editing inside the Linux app: `bun run dev` here, then `BB1_UI_URL=http://localhost:5173 bb1`.

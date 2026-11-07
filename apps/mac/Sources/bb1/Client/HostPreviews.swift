@@ -151,6 +151,11 @@ final class HostPreviews {
         return p
     }
 
+    /// The last picture of a host as the JPEG it arrived as (the web dashboard shows it as an image).
+    func jpeg(for name: String) -> Data? {
+        try? Data(contentsOf: HostPreviews.cacheURL(name))
+    }
+
     private static func decode(_ data: Data) -> CGImage? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         return CGImageSourceCreateImageAtIndex(source, 0, nil)

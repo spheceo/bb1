@@ -30,6 +30,27 @@ export function startMock(push: (s: State) => void): (c: Command) => void {
     };
     s.stream = { label: "Siphesihle’s MacBook Air", status: "Connected · 60 fps · 7 ms", connected: true };
   }
+  // ?platform=windows / mac: what those apps add (update button, sound, controllers, permissions…).
+  const platform = new URLSearchParams(location.search).get("platform");
+  if (platform === "windows" || platform === "mac") {
+    s.platform = platform;
+    s.me = platform === "mac" ? "Siphesihle’s MacBook Air M4" : "PC";
+    s.computers = s.computers.map((c, i) => ({ ...c, canForget: c.quiet, canUpdate: i === 0 }));
+    s.update = { kind: "offer", label: "Update to nightly-41", also: ["Siphesihle’s MacBook Air"] };
+    s.updateStatus = { text: "nightly-41 is ready", canCheck: true };
+    s.pairedCount = 2;
+    s.mutedApps = [
+      { id: "discord", name: "Discord", muted: true },
+      { id: "chrome", name: "Google Chrome", muted: false },
+    ];
+    if (platform === "windows") {
+      s.controllerDriver = { state: "missing" };
+      s.sharing.note = "Needs an NVIDIA graphics card.";
+    } else {
+      s.permissions = { screenRecording: true, accessibility: false };
+      s.app = { openAtLogin: true, keepRunning: true, dock: "open" };
+    }
+  }
   if (demo === "code") s.stream = { label: "Siphesihle’s MacBook Air M4", status: "Waiting for the code", connected: false, askingCode: "Siphesihle’s MacBook Air M4" };
   const update = (f: (s: State) => State) => {
     s = f(s);
