@@ -24,6 +24,7 @@ fn cli() -> Option<String> {
         r"C:\Program Files (x86)\Tailscale\tailscale.exe",
         "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
         "/usr/local/bin/tailscale",
+        "/usr/bin/tailscale",
         "/opt/homebrew/bin/tailscale",
     ];
     candidates.iter().find(|p| std::path::Path::new(p).exists()).map(|p| p.to_string())

@@ -154,7 +154,7 @@ impl Directory {
         let peers = tailscale::peers();
         let running = peers.is_some();
         let candidates: Vec<tailscale::Peer> =
-            peers.clone().unwrap_or_default().into_iter().filter(|p| p.online && (p.os == "macOS" || p.os == "windows") && p.mine).collect();
+            peers.clone().unwrap_or_default().into_iter().filter(|p| p.online && (p.os == "macOS" || p.os == "windows" || p.os == "linux") && p.mine).collect();
         // Check them all at once: each is a TCP connect that may take a second to fail.
         let handles: Vec<_> = candidates
             .iter()

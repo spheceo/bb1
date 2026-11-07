@@ -5,10 +5,14 @@
 //! its own resolution and bitrate; packets are sealed, split and paced per viewer. The protocol is
 //! the Mac host's (apps/mac/Sources/BB1Core), so existing clients connect unchanged.
 
+#[cfg(windows)]
 pub mod audio_in;
+#[cfg(windows)]
 pub mod capture;
+#[cfg(windows)]
 pub mod input;
 pub mod nvenc;
 #[allow(non_camel_case_types, non_snake_case, non_upper_case_globals, dead_code, clippy::all)]
 pub mod nvenc_sys;
+#[cfg(windows)]
 pub mod server;

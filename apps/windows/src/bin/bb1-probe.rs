@@ -2,6 +2,7 @@
 //! Runs on any platform, so the Windows client's protocol code is tested on a Mac against a real host:
 //!   bb1-probe --host 127.0.0.1:47960 [--code-file F | --code 123456] [--seconds 6] [--out stream.h264]
 //!             [--screen '\\.\DISPLAY2']   (ask the host to share that screen, and check it did)
+//!             [--wiggle]   (move the host's pointer in a small circle: checks input, and that frames flow)
 
 use bb1::core::client::{Client, Events, Stats, Target, Auth};
 use bb1::core::proto::{CursorMsg, ClipboardMsg, DisplaysMsg, Msg, StreamConfig};
@@ -112,7 +113,8 @@ fn main() {
     let screen = arg("--screen");
     // (epoch when asked, frames when asked)
     let mut asked: Option<(i64, u64)> = None;
-    let client = Client::start(target, probe.clone(), true, false);
+    // --wiggle: the pointer drawn into the video, so its moves show up as frames.
+    let client = Client::start(target, probe.clone(), true, args.iter().any(|a| a == "--wiggle"));
     let _ = probe.client.set(client.clone());
     // --gamepads (Windows): send this PC's controllers too, as if a stream window were in front.
     #[cfg(windows)]
@@ -120,8 +122,16 @@ fn main() {
         unsafe { std::env::set_var("BB1_GAMEPADS_ALWAYS", "1") };
         bb1::win::gamepad::start(client.clone(), None);
     }
-    for _ in 0..seconds * 10 {
+    let wiggle = args.iter().any(|a| a == "--wiggle");
+    for tick in 0..seconds * 10 {
         std::thread::sleep(Duration::from_millis(100));
+        if wiggle && *probe.connected.lock().unwrap() {
+            for step in 0..10 {
+                let a = (tick * 10 + step) as f64 * 0.06;
+                client.send(Msg::MouseMove(bb1::core::proto::v(bb1::core::proto::MouseMoveMsg { x: 0.5 + 0.04 * a.cos(), y: 0.5 + 0.08 * a.sin() })));
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
         if probe.ended.lock().unwrap().is_some() { break; }
         // Once the stream runs and the host has listed its screens, ask for the other one.
         if let Some(id) = &screen

@@ -27,7 +27,6 @@
 //! driver (`Gamepads`), so every friend is a separate player; games' rumble goes back to that
 //! viewer. Without the driver (Settings offers to install it) controllers are ignored.
 
-use crate::core::keymap::MAC_CAPS_LOCK;
 use crate::core::gamepad::{self, MAX_PADS};
 use crate::core::proto::{GamepadMsg, KeyMsg, MouseButtonMsg, MouseMoveMsg, RumbleMsg, ScrollMsg};
 use crate::logi;
@@ -42,146 +41,24 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW, WHEEL_DELTA, XBUTTON1, XBUTTON2,
 };
 
+// Mac modifier key codes, for the tests (the mapping itself is `keymap::scan_for`).
+#[cfg(test)]
 const CMD_L: u16 = 55;
+#[cfg(test)]
 const CMD_R: u16 = 54;
+#[cfg(test)]
 const CTRL_L: u16 = 59;
-const CTRL_R: u16 = 62;
+#[cfg(test)]
 const OPT_L: u16 = 58;
+#[cfg(test)]
 const OPT_R: u16 = 61;
 const SCAN_CAPS_LOCK: u16 = 0x3A;
 /// NSEvent.Phase.began: a new touchpad gesture, so leftover fractions of a notch are dropped.
 const PHASE_BEGAN: u64 = 1;
 
-/// Mac key code → (PC scan code, E0 extended), for every key `keymap::mac_key` produces except the
-/// modifiers ⌘ ⌃ ⌥ (see `scan_for`). Where two PC keys give the same Mac code the one in that key's
-/// place on a Mac keyboard wins: F13 → Print Screen, F14 → Scroll Lock, Kana → Kana (not Henkan).
-const KEYS: &[(u16, u16, bool)] = &[
-    (53, 0x01, false), // Escape
-    (18, 0x02, false), // 1
-    (19, 0x03, false),
-    (20, 0x04, false),
-    (21, 0x05, false),
-    (23, 0x06, false),
-    (22, 0x07, false),
-    (26, 0x08, false),
-    (28, 0x09, false),
-    (25, 0x0A, false),
-    (29, 0x0B, false), // 0
-    (27, 0x0C, false), // -
-    (24, 0x0D, false), // =
-    (51, 0x0E, false), // Backspace
-    (48, 0x0F, false), // Tab
-    (12, 0x10, false), // Q
-    (13, 0x11, false),
-    (14, 0x12, false),
-    (15, 0x13, false),
-    (17, 0x14, false),
-    (16, 0x15, false),
-    (32, 0x16, false),
-    (34, 0x17, false),
-    (31, 0x18, false),
-    (35, 0x19, false), // P
-    (33, 0x1A, false), // [
-    (30, 0x1B, false), // ]
-    (36, 0x1C, false), // Return
-    (0, 0x1E, false),  // A
-    (1, 0x1F, false),
-    (2, 0x20, false),
-    (3, 0x21, false),
-    (5, 0x22, false),
-    (4, 0x23, false),
-    (38, 0x24, false),
-    (40, 0x25, false),
-    (37, 0x26, false), // L
-    (41, 0x27, false), // ;
-    (39, 0x28, false), // '
-    (50, 0x29, false), // `
-    (56, 0x2A, false), // left Shift
-    (42, 0x2B, false), // backslash
-    (6, 0x2C, false),  // Z
-    (7, 0x2D, false),
-    (8, 0x2E, false),
-    (9, 0x2F, false),
-    (11, 0x30, false),
-    (45, 0x31, false),
-    (46, 0x32, false), // M
-    (43, 0x33, false), // ,
-    (47, 0x34, false), // .
-    (44, 0x35, false), // /
-    (60, 0x36, false), // right Shift
-    (67, 0x37, false), // keypad *
-    (49, 0x39, false), // Space
-    (122, 0x3B, false), // F1
-    (120, 0x3C, false),
-    (99, 0x3D, false),
-    (118, 0x3E, false),
-    (96, 0x3F, false),
-    (97, 0x40, false),
-    (98, 0x41, false),
-    (100, 0x42, false),
-    (101, 0x43, false),
-    (109, 0x44, false), // F10
-    // Num Lock: the hook reports it as 0x45 + E0 (and the client sends that as keypad Clear); sent
-    // without E0 it would be Pause.
-    (71, 0x45, true),
-    (107, 0x46, false), // F14 → Scroll Lock
-    (89, 0x47, false),  // keypad 7
-    (91, 0x48, false),
-    (92, 0x49, false),
-    (78, 0x4A, false), // keypad -
-    (86, 0x4B, false),
-    (87, 0x4C, false),
-    (88, 0x4D, false),
-    (69, 0x4E, false), // keypad +
-    (83, 0x4F, false),
-    (84, 0x50, false),
-    (85, 0x51, false),
-    (82, 0x52, false), // keypad 0
-    (65, 0x53, false), // keypad .
-    (10, 0x56, false), // ISO key next to left Shift
-    (103, 0x57, false), // F11
-    (111, 0x58, false), // F12
-    (113, 0x66, false), // F15
-    (106, 0x67, false), // F16
-    (64, 0x68, false),  // F17
-    (79, 0x69, false),  // F18
-    (80, 0x6A, false),  // F19
-    (104, 0x70, false), // Kana
-    (94, 0x73, false),  // Ro
-    (102, 0x7B, false), // Eisu → Muhenkan
-    (93, 0x7D, false),  // Yen
-    (76, 0x1C, true),   // keypad Enter
-    (75, 0x35, true),   // keypad /
-    (105, 0x37, true),  // F13 → Print Screen
-    (115, 0x47, true),  // Home
-    (126, 0x48, true),  // Up
-    (116, 0x49, true),  // Page Up
-    (123, 0x4B, true),  // Left
-    (124, 0x4D, true),  // Right
-    (119, 0x4F, true),  // End
-    (125, 0x50, true),  // Down
-    (121, 0x51, true),  // Page Down
-    (114, 0x52, true),  // Help → Insert
-    (117, 0x53, true),  // forward Delete
-    (110, 0x5D, true),  // Menu
-    (74, 0x20, true),   // Mute
-    (73, 0x2E, true),   // Volume Down
-    (72, 0x30, true),   // Volume Up
-];
-
-/// The PC key (scan code, extended) for Mac key `code`. None: no such key on a PC (fn, Caps Lock).
-pub(crate) fn scan_for(code: u16, command_is_windows_key: bool) -> Option<(u16, bool)> {
-    match code {
-        CMD_L if command_is_windows_key => Some((0x5B, true)),
-        CMD_R if command_is_windows_key => Some((0x5C, true)),
-        CMD_L | CTRL_L => Some((0x1D, false)),
-        CMD_R | CTRL_R => Some((0x1D, true)),
-        OPT_L => Some((0x38, false)),
-        OPT_R => Some((0x38, true)),
-        MAC_CAPS_LOCK => None,
-        _ => KEYS.iter().find(|k| k.0 == code).map(|k| (k.1, k.2)),
-    }
-}
+pub(crate) use crate::core::keymap::scan_for;
+#[cfg(test)]
+use crate::core::keymap::{KEYS, MAC_CAPS_LOCK};
 
 /// Pixel `p` of a `size`-pixel span starting at `origin` → SendInput's 0..65535 absolute units
 /// (aimed at the pixel's centre, so rounding either way lands on it).

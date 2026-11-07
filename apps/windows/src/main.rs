@@ -14,6 +14,8 @@ fn main() {
             bb1::win::app::run();
         }
     }
-    #[cfg(not(windows))]
-    eprintln!("bb1 for Windows only runs on Windows. On other systems use bb1-probe for testing.");
+    #[cfg(target_os = "linux")]
+    bb1::linux::app::main();
+    #[cfg(not(any(windows, target_os = "linux")))]
+    eprintln!("bb1 runs on Windows and Linux. On other systems use bb1-probe for testing.");
 }

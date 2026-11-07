@@ -2,7 +2,7 @@
 name = "bb1"
 version = "0.1.0"
 edition = "2024"
-description = "bb1 client for Windows"
+description = "bb1 for Windows and Linux"
 license = "GPL-3.0-or-later"
 default-run = "bb1"
 
@@ -62,6 +62,16 @@ windows = { version = "0.62.2", features = [
 ] }
 windows-numerics = "0.3.1"
 vigem-client = { version = "0.1.4", features = ["unstable_xtarget_notification"] }
+
+[target."cfg(target_os = \"linux\")".dependencies]
+# Linux app (src/linux): SDL3 stream window, FFmpeg's libavcodec (decode; host encode through NVENC
+# or x264), PipeWire (screen and sound capture), the desktop portal over D-Bus (screen-share and
+# remote-input permission), egui for the main window.
+sdl3-sys = "0.7.3"
+ffmpeg-next = { version = "9.0.0", default-features = false, features = ["codec", "format", "software-scaling"] }
+pipewire = "0.10.1"
+zbus = "4.4.0"
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "wayland", "x11", "default_fonts"] }
 
 [build-dependencies]
 embed-resource = "3.0.12"

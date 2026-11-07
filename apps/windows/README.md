@@ -1,6 +1,6 @@
-# bb1 for Windows
+# bb1 for Windows and Linux
 
-Connect to a Mac running bb1 from a Windows 10 or 11 PC. In testing.
+Connect to a Mac running bb1 from a Windows 10 or 11 PC, or from Linux, and share the PC with your other computers. In testing. Linux: see [bb1 on Linux](#bb1-on-linux) below.
 
 ## Use it
 
@@ -67,6 +67,44 @@ The host (`src/host`, Windows only) is DXGI Desktop Duplication → NVENC (one e
 ### Third-party files
 
 `SDL3.dll` is SDL 3.2.30's official Windows build (`SDL3-3.2.30-win32-x64.zip` from github.com/libsdl-org/SDL/releases), under the zlib licence (free to redistribute; its `LICENSE.txt` is cached next to it in `target/sdl3-3.2.30/`). `scripts/installer.sh` and the Windows workflow download it and check its SHA-256; to update it, change the version and checksum in both. Without it bb1 runs fine, just without controllers (copying `bb1.exe` alone to a PC means no controllers until `SDL3.dll` is beside it).
+
+## bb1 on Linux
+
+The same app, built from the same code (`src/core`), with Linux's parts in `src/linux`. It connects to Macs, Windows PCs and other Linux computers, and shares this one. Tested on Ubuntu 26.04 (GNOME 50, Wayland) with an NVIDIA card.
+
+**Install** (builds from source; Ubuntu 25.04 or later / Debian 13, for SDL3):
+
+```sh
+sudo apt install libsdl3-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
+                 libavfilter-dev libavdevice-dev libpipewire-0.3-dev libclang-dev clang
+scripts/install-linux.sh                    # → ~/.local/bin/bb1, and bb1 in your apps
+scripts/install-linux.sh --share-at-login   # also share this computer whenever you log in
+```
+
+No signing, root or kernel module needed.
+
+**Use it:** open bb1. Your computers on the same Tailscale account and on the home network are listed; **Connect** opens the stream window. A computer that isn't paired or on your Tailscale account shows a 6-digit code to type in bb1's window.
+
+- **Control follows the pointer**, as on Windows: with the stream window in front and the pointer on the picture (or full screen) the keyboard is grabbed, Super and Alt+Tab included. GNOME asks once whether bb1 may take the shortcuts.
+- **Ctrl+Alt+Enter**: full screen. **Ctrl+Alt+← / →**: the host's other screen.
+- Sound, clipboard (text and pictures, not password-manager copies) and game controllers (SDL3: Xbox, PlayStation, Switch Pro) go along. Which key is ⌘ is in the main window's settings.
+- The title bar shows frame rate, bitrate, round trip and how far behind the picture is.
+
+**Sharing this computer:** tick **Share … with my other computers** in the main window, or run `bb1 --host` (no window; pairing codes in the terminal and as notifications). The first time, the desktop asks to share the screen and allow remote control: choose the screen and allow it. bb1 keeps that permission (a restore token in `~/.config/bb1/portal-restore-token`), so it doesn't ask again. Macs list a Linux computer on the home network (Bonjour), and on Tailscale once the Mac app is rebuilt with this change (until then, type its Tailscale IP or name).
+
+| Part | Linux |
+|---|---|
+| Stream window | SDL3: window, NV12 texture (BT.709 limited range), keyboard grab (Wayland shortcuts-inhibit / X11 grab), sound, clipboard, controllers |
+| Decode | FFmpeg's libavcodec: NVIDIA through CUDA, Intel/AMD through VA-API, else the CPU (`BB1_DECODER=cpu` forces it) |
+| Main window | egui (`src/linux/ui.rs`); the stream runs as its own process (`bb1 --stream ADDRESS`) |
+| Screen | The desktop portal's ScreenCast (`src/linux/portal.rs`) → PipeWire frames (`capture.rs`); the pointer arrives as metadata, so it's left out for clients that draw their own |
+| Encode | libavcodec: NVENC with the Windows host's low-latency settings, else x264 on the CPU (`encoder.rs`) |
+| Input | The portal's RemoteDesktop session: keys as Linux key codes, absolute pointer, wheel clicks and smooth scrolling (`input.rs`) |
+| Sound | PipeWire capture of what plays (the default output's monitor), 48 kHz stereo in 5 ms chunks (`audio_in.rs`) |
+
+Settings and pairings: `~/.config/bb1`. Logs: `~/.local/state/bb1` (`client.log`, `host.log`). `bb1 --host --synthetic` shares a moving test picture without the portal (for testing with `bb1-probe`).
+
+Not yet on Linux: in-app updates and release builds (build it from source), sharing game controllers *into* a Linux host, the clipboard on a Linux host, choosing another screen while sharing (the portal dialog picks one), and keeping bb1 by the clock (closing the main window stops sharing; `bb1 --host` doesn't need a window).
 
 ## Not yet
 

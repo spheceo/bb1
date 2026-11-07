@@ -9,6 +9,8 @@ use std::path::PathBuf;
 pub fn support_dir() -> PathBuf {
     let dir = if let Ok(d) = std::env::var("BB1_SUPPORT_DIR") {
         PathBuf::from(d)
+    } else if cfg!(target_os = "linux") {
+        xdg("XDG_CONFIG_HOME", ".config").join("bb1")
     } else if let Ok(appdata) = std::env::var("APPDATA") {
         PathBuf::from(appdata).join("bb1")
     } else {
@@ -18,7 +20,18 @@ pub fn support_dir() -> PathBuf {
     dir
 }
 
+/// $XDG_… or ~/<fallback> (Linux).
+fn xdg(var: &str, fallback: &str) -> PathBuf {
+    match std::env::var(var) {
+        Ok(d) if d.starts_with('/') => PathBuf::from(d),
+        _ => PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(fallback),
+    }
+}
+
 pub fn log_dir() -> PathBuf {
+    if cfg!(target_os = "linux") && std::env::var_os("BB1_SUPPORT_DIR").is_none() {
+        return xdg("XDG_STATE_HOME", ".local/state").join("bb1");
+    }
     if let Ok(local) = std::env::var("LOCALAPPDATA") {
         PathBuf::from(local).join("bb1").join("Logs")
     } else {
@@ -47,8 +60,12 @@ pub fn device_id() -> String {
 pub fn device_name() -> String {
     std::env::var("BB1_DEVICE_NAME")
         .or_else(|_| std::env::var("COMPUTERNAME"))
+        .or_else(|_| {
+            // Linux: the computer's name (HOSTNAME is a shell variable, rarely exported).
+            std::fs::read_to_string("/proc/sys/kernel/hostname").map(|h| h.trim().to_string()).map_err(|_| ()).and_then(|h| if h.is_empty() { Err(()) } else { Ok(h) })
+        })
         .or_else(|_| std::env::var("HOSTNAME"))
-        .unwrap_or_else(|_| "Windows PC".into())
+        .unwrap_or_else(|_| if cfg!(target_os = "linux") { "Linux PC".into() } else { "Windows PC".into() })
 }
 
 mod b64 {
