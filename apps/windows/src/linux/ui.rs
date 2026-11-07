@@ -1,32 +1,54 @@
-//! The main window (egui): your computers (Tailscale, home network, paired), connecting to one,
-//! sharing this computer, and settings. The stream itself runs in its own process (stream.rs),
-//! which reports back over its stdout and gets pairing codes on its stdin.
+//! The main window: the shared React UI (apps/ui) in a web view (wry on WebKitGTK, in a tao window),
+//! and its bridge to the app (apps/ui/src/types.ts is the contract).
+//!
+//! - The page is embedded in the binary (apps/ui/dist/index.html) and served as bb1://localhost/,
+//!   with computers' screenshots at bb1://localhost/preview/<name>. BB1_UI_URL=http://localhost:5173
+//!   loads the UI's dev server instead (cd apps/ui && bun run dev), for working on it live.
+//! - App → page: the whole state as JSON, through window.bb1Receive, whenever something changes and
+//!   once a second (latencies, viewers).
+//! - Page → app: one JSON command per message (window.ipc.postMessage).
+//!
+//! The stream runs in its own process (stream.rs), which reports over its stdout and gets pairing
+//! codes on its stdin.
 
 use crate::core::directory::Directory;
-use crate::core::host::{Access, HostEvents, Viewer};
-use crate::core::keymap::ModifierLayout;
+use crate::core::host::{Access, HostEvents};
 use crate::core::store::{self, Settings};
 use crate::linux::sharing::Sharing;
 use crate::logi;
-use eframe::egui;
+use serde_json::{Value, json};
+use std::borrow::Cow;
 use std::io::{BufRead, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tao::event::{Event, WindowEvent};
+use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
+use tao::window::{Icon, Theme, WindowBuilder};
+use wry::WebViewBuilder;
+use wry::http::{Response, header::CONTENT_TYPE};
+
+#[cfg(bb1_ui)]
+const PAGE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/dist/index.html"));
+#[cfg(not(bb1_ui))]
+const PAGE: &str = "<!doctype html><html><body style='background:#09090a;color:#eee;font:15px system-ui;padding:40px'>\
+<h2>bb1's window isn't built</h2><p>Build the UI, then bb1 again:</p>\
+<pre>cd apps/ui &amp;&amp; bun install &amp;&amp; bun run build\ncd ../windows &amp;&amp; cargo build --release</pre></body></html>";
+
+#[derive(Debug)]
+enum UserEvent {
+    /// Something changed: send the state to the page.
+    Push,
+}
 
 /// The stream window's process, and what it last said.
 struct StreamProc {
     label: String,
     child: Child,
     stdin: Option<ChildStdin>,
-    state: Arc<Mutex<StreamState>>,
-}
-
-#[derive(Default)]
-struct StreamState {
     status: String,
     connected: bool,
     asking_code: Option<String>,
-    ended: Option<String>,
 }
 
 enum Share {
@@ -36,421 +58,423 @@ enum Share {
     Failed(String),
 }
 
-#[derive(Default)]
-struct HostView {
+struct Model {
+    settings: Settings,
+    stream: Option<StreamProc>,
+    last_ended: Option<String>,
+    share: Share,
     pairing: Option<(String, String)>,
-    viewers: Vec<String>,
+    me: String,
 }
 
+type Shared = Arc<Mutex<Model>>;
+
 struct UiHostEvents {
-    view: Arc<Mutex<HostView>>,
-    ctx: egui::Context,
+    model: Shared,
+    proxy: EventLoopProxy<UserEvent>,
 }
 
 impl HostEvents for UiHostEvents {
     fn pairing_code(&self, device: &str, code: &str) {
-        self.view.lock().unwrap().pairing = Some((device.to_string(), code.to_string()));
+        self.model.lock().unwrap().pairing = Some((device.to_string(), code.to_string()));
         crate::linux::app::notify(&format!("{device} wants to connect"), &format!("Type this code on it: {code}"));
-        self.ctx.request_repaint();
+        let _ = self.proxy.send_event(UserEvent::Push);
     }
     fn pairing_finished(&self, _paired: bool) {
-        self.view.lock().unwrap().pairing = None;
-        self.ctx.request_repaint();
+        self.model.lock().unwrap().pairing = None;
+        let _ = self.proxy.send_event(UserEvent::Push);
     }
-    fn viewers_changed(&self, names: &[String]) {
-        self.view.lock().unwrap().viewers = names.to_vec();
-        self.ctx.request_repaint();
+    fn viewers_changed(&self, _names: &[String]) {
+        let _ = self.proxy.send_event(UserEvent::Push);
     }
-}
-
-struct App {
-    settings: Settings,
-    directory: Directory,
-    address: String,
-    code: String,
-    stream: Option<StreamProc>,
-    last_ended: Option<String>,
-    share: Arc<Mutex<Share>>,
-    host_view: Arc<Mutex<HostView>>,
-    me: String,
 }
 
 pub fn run() {
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_title("bb1").with_app_id("bb1").with_inner_size([520.0, 640.0]).with_min_inner_size([420.0, 420.0]),
-        ..Default::default()
-    };
-    let result = eframe::run_native(
-        "bb1",
-        options,
-        Box::new(|cc| {
-            let ctx = cc.egui_ctx.clone();
-            let directory = Directory::start(move || ctx.request_repaint());
-            let settings = Settings::load();
-            let mut app = App {
-                address: settings.last_address.clone().unwrap_or_default(),
-                settings,
-                directory,
-                code: String::new(),
-                stream: None,
-                last_ended: None,
-                share: Arc::new(Mutex::new(Share::Off)),
-                host_view: Arc::default(),
-                me: store::device_name(),
-            };
-            if app.settings.sharing {
-                app.start_sharing(&cc.egui_ctx);
-            }
-            Ok(Box::new(app))
-        }),
-    );
-    if let Err(e) = result {
-        eprintln!("bb1: couldn't open its window: {e}");
+    // WebKitGTK's DMA-BUF renderer shows a blank or flickering window with NVIDIA's driver.
+    if std::path::Path::new("/proc/driver/nvidia/version").exists() && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        unsafe { std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1") };
     }
+    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    let proxy = event_loop.create_proxy();
+    let window = WindowBuilder::new()
+        .with_title("bb1")
+        .with_inner_size(tao::dpi::LogicalSize::new(1100.0, 760.0))
+        .with_min_inner_size(tao::dpi::LogicalSize::new(480.0, 420.0))
+        .with_theme(Some(Theme::Dark))
+        .with_window_icon(icon())
+        .build(&event_loop)
+        .expect("couldn't open bb1's window");
+
+    let settings = Settings::load();
+    let start_sharing = settings.sharing;
+    let model: Shared = Arc::new(Mutex::new(Model {
+        settings,
+        stream: None,
+        last_ended: None,
+        share: Share::Off,
+        pairing: None,
+        me: store::device_name(),
+    }));
+    let p = proxy.clone();
+    let directory = Directory::start(move || {
+        let _ = p.send_event(UserEvent::Push);
+    });
+
+    let previews = directory.clone();
+    let (m, p) = (model.clone(), proxy.clone());
+    let dir = directory.clone();
+    let mut builder = WebViewBuilder::new()
+        .with_background_color((9, 9, 10, 255))
+        .with_devtools(cfg!(debug_assertions))
+        .with_custom_protocol("bb1".into(), move |_id, request| {
+            let path = request.uri().path().to_string();
+            if let Some(name) = path.strip_prefix("/preview/") {
+                let name = percent_decode(name);
+                if let Some(p) = previews.preview(&name) {
+                    return Response::builder().header(CONTENT_TYPE, "image/jpeg").header("Cache-Control", "max-age=31536000").body(Cow::Owned(p.jpeg.to_vec())).unwrap();
+                }
+                return Response::builder().status(404).body(Cow::Borrowed(&b""[..])).unwrap();
+            }
+            Response::builder().header(CONTENT_TYPE, "text/html; charset=utf-8").body(Cow::Borrowed(PAGE.as_bytes())).unwrap()
+        })
+        .with_ipc_handler(move |req| {
+            let body: &String = req.body();
+            match serde_json::from_str::<Value>(body) {
+                Ok(cmd) => command(&m, &dir, &p, &cmd),
+                Err(e) => logi!("ui: bad message from the page: {e}"),
+            }
+        });
+    builder = match std::env::var("BB1_UI_URL") {
+        Ok(url) => builder.with_url(url),
+        Err(_) => builder.with_url("bb1://localhost/"),
+    };
+    let webview = {
+        use tao::platform::unix::WindowExtUnix;
+        use wry::WebViewBuilderExtUnix;
+        builder.build_gtk(window.default_vbox().expect("no GTK box")).expect("couldn't open the web view")
+    };
+
+    if start_sharing {
+        start_sharing_now(&model, &proxy);
+    }
+    let mut last_push = Instant::now() - Duration::from_secs(10);
+    event_loop.run(move |event, _, control_flow| {
+        *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_secs(1));
+        match event {
+            Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
+                let mut m = model.lock().unwrap();
+                disconnect(&mut m);
+                if let Share::On(s) = std::mem::replace(&mut m.share, Share::Off) {
+                    s.stop();
+                }
+                *control_flow = ControlFlow::Exit;
+            }
+            Event::WindowEvent { event: WindowEvent::Focused(on), .. } => directory.set_active(on),
+            Event::UserEvent(UserEvent::Push) => {
+                push(&webview, &model, &directory);
+                last_push = Instant::now();
+            }
+            Event::NewEvents(tao::event::StartCause::ResumeTimeReached { .. }) if last_push.elapsed() >= Duration::from_millis(900) => {
+                push(&webview, &model, &directory);
+                last_push = Instant::now();
+            }
+            _ => {}
+        }
+    });
 }
 
-impl App {
-    fn connect(&mut self, ctx: &egui::Context, address: &str, label: &str) {
-        self.disconnect();
-        self.last_ended = None;
-        let exe = std::env::current_exe().unwrap_or_else(|_| "bb1".into());
-        let child = Command::new(exe)
-            .args(["--stream", address, "--label", label])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn();
-        let mut child = match child {
-            Ok(c) => c,
-            Err(e) => {
-                self.last_ended = Some(format!("Couldn't start the stream window: {e}"));
-                return;
+fn icon() -> Option<Icon> {
+    let mut reader = png::Decoder::new(std::io::Cursor::new(&include_bytes!("../../res/bb1.png")[..])).read_info().ok()?;
+    let mut buf = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buf).ok()?;
+    if info.color_type != png::ColorType::Rgba {
+        return None;
+    }
+    buf.truncate(info.width as usize * info.height as usize * 4);
+    Icon::from_rgba(buf, info.width, info.height).ok()
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
             }
-        };
-        let state = Arc::new(Mutex::new(StreamState { status: format!("Connecting to {label}…"), ..Default::default() }));
-        if let Some(out) = child.stdout.take() {
-            let (state, ctx) = (state.clone(), ctx.clone());
-            std::thread::spawn(move || {
-                for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
-                    let Some(rest) = line.strip_prefix('@') else { continue };
-                    let (kind, text) = rest.split_once(' ').unwrap_or((rest, ""));
-                    let mut s = state.lock().unwrap();
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The state the page shows (apps/ui/src/types.ts, State).
+fn state(model: &Shared, directory: &Directory) -> Value {
+    let m = model.lock().unwrap();
+    let computers: Vec<Value> = directory
+        .entries()
+        .into_iter()
+        .map(|e| {
+            let preview = directory.preview(&e.name);
+            json!({
+                "name": e.name,
+                "address": e.address,
+                "online": e.online,
+                "quiet": e.quiet,
+                "latencyMs": directory.latency_ms(&e.name),
+                "previewVersion": preview.as_ref().map(|p| p.version),
+                "previewAgo": preview.as_ref().filter(|_| !e.online).map(|p| crate::core::directory::ago(p.at)),
+            })
+        })
+        .collect();
+    let (share_state, error, viewers) = match &m.share {
+        Share::Off => ("off", None, vec![]),
+        Share::Starting => ("starting", None, vec![]),
+        Share::Failed(e) => ("failed", Some(e.clone()), vec![]),
+        Share::On(s) => (
+            "on",
+            None,
+            s.host()
+                .viewers()
+                .into_iter()
+                .map(|v| json!({ "id": v.id, "name": v.name, "mouse": v.mouse, "keyboard": v.keyboard, "controller": v.controller }))
+                .collect(),
+        ),
+    };
+    let s = &m.settings;
+    json!({
+        "platform": "linux",
+        "me": m.me,
+        "build": crate::core::updater::build_name(crate::core::updater::BUILD),
+        "tailscaleRunning": directory.tailscale_running(),
+        "computers": computers,
+        "stream": m.stream.as_ref().map(|st| json!({
+            "label": st.label,
+            "status": st.status,
+            "connected": st.connected,
+            "askingCode": st.asking_code,
+        })),
+        "lastEnded": m.last_ended,
+        "sharing": {
+            "state": share_state,
+            "error": error,
+            "pairing": m.pairing.as_ref().filter(|_| share_state == "on").map(|(d, c)| json!({ "device": d, "code": c })),
+            "viewers": viewers,
+        },
+        "settings": {
+            "sound": s.sound,
+            "clipboard": s.clipboard,
+            "modifierLayout": s.modifier_layout,
+            "allowTailscale": s.allow_tailscale,
+            "allowPairing": s.allow_pairing,
+            "sharing": s.sharing,
+            "nightly": s.nightly,
+        },
+        "logDir": store::log_dir().display().to_string(),
+    })
+}
+
+fn push(webview: &wry::WebView, model: &Shared, directory: &Directory) {
+    let s = state(model, directory);
+    let _ = webview.evaluate_script(&format!("window.bb1Receive && window.bb1Receive({{type:'state',state:{s}}})"));
+}
+
+/// One command from the page (apps/ui/src/types.ts, Command).
+fn command(model: &Shared, directory: &Directory, proxy: &EventLoopProxy<UserEvent>, c: &Value) {
+    let s = |k: &str| c.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+    let b = |k: &str| c.get(k).and_then(Value::as_bool).unwrap_or(false);
+    match c.get("cmd").and_then(Value::as_str).unwrap_or_default() {
+        "ready" => directory.set_active(true),
+        "connect" => connect(model, proxy, &s("address"), &s("label")),
+        "disconnect" => disconnect(&mut model.lock().unwrap()),
+        "sendCode" => {
+            let code: String = s("code").chars().filter(|c| c.is_ascii_digit()).collect();
+            let mut m = model.lock().unwrap();
+            if let Some(st) = m.stream.as_mut() {
+                if let Some(stdin) = st.stdin.as_mut() {
+                    let _ = writeln!(stdin, "{code}");
+                    let _ = stdin.flush();
+                }
+                st.asking_code = None;
+            }
+        }
+        "setSharing" => {
+            let on = b("on");
+            {
+                let mut m = model.lock().unwrap();
+                m.settings.sharing = on;
+                m.settings.save();
+            }
+            if on {
+                start_sharing_now(model, proxy);
+            } else {
+                let old = std::mem::replace(&mut model.lock().unwrap().share, Share::Off);
+                if let Share::On(s) = old {
+                    s.stop();
+                }
+                model.lock().unwrap().pairing = None;
+            }
+        }
+        "setViewerAccess" => {
+            let id = c.get("id").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let what = match s("what").as_str() {
+                "mouse" => Access::Mouse,
+                "keyboard" => Access::Keyboard,
+                _ => Access::Controller,
+            };
+            if let Share::On(sh) = &model.lock().unwrap().share {
+                sh.host().set_access(id, what, b("on"));
+            }
+        }
+        "disconnectViewer" => {
+            let id = c.get("id").and_then(Value::as_u64).unwrap_or(0) as u32;
+            if let Share::On(sh) = &model.lock().unwrap().share {
+                sh.host().disconnect(id);
+            }
+        }
+        "setSettings" => {
+            let Some(new) = c.get("settings") else { return };
+            let mut m = model.lock().unwrap();
+            let st = &mut m.settings;
+            let flag = |k: &str, v: &mut bool| {
+                if let Some(x) = new.get(k).and_then(Value::as_bool) {
+                    *v = x;
+                }
+            };
+            flag("sound", &mut st.sound);
+            flag("clipboard", &mut st.clipboard);
+            flag("allowTailscale", &mut st.allow_tailscale);
+            flag("allowPairing", &mut st.allow_pairing);
+            flag("nightly", &mut st.nightly);
+            if let Some(l) = new.get("modifierLayout").and_then(Value::as_str) {
+                st.modifier_layout = l.to_string();
+            }
+            st.save();
+            if let Share::On(sh) = &m.share {
+                sh.apply_settings(&m.settings);
+            }
+        }
+        "openLogs" => {
+            let _ = Command::new("xdg-open").arg(store::log_dir()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+        }
+        "dismissEnded" => model.lock().unwrap().last_ended = None,
+        other => logi!("ui: unknown command {other}"),
+    }
+    let _ = proxy.send_event(UserEvent::Push);
+}
+
+fn start_sharing_now(model: &Shared, proxy: &EventLoopProxy<UserEvent>) {
+    model.lock().unwrap().share = Share::Starting;
+    let (model, proxy) = (model.clone(), proxy.clone());
+    std::thread::spawn(move || {
+        let settings = model.lock().unwrap().settings.clone();
+        let events = Arc::new(UiHostEvents { model: model.clone(), proxy: proxy.clone() });
+        let result = Sharing::start(events, &settings, false);
+        let mut m = model.lock().unwrap();
+        match result {
+            Ok(sharing) => {
+                if matches!(m.share, Share::Starting) {
+                    m.share = Share::On(sharing);
+                } else {
+                    sharing.stop(); // turned off while starting
+                }
+            }
+            Err(e) => {
+                logi!("host: couldn't share: {e}");
+                if matches!(m.share, Share::Starting) {
+                    m.share = Share::Failed(e);
+                }
+            }
+        }
+        drop(m);
+        let _ = proxy.send_event(UserEvent::Push);
+    });
+}
+
+fn connect(model: &Shared, proxy: &EventLoopProxy<UserEvent>, address: &str, label: &str) {
+    let mut m = model.lock().unwrap();
+    disconnect(&mut m);
+    m.last_ended = None;
+    let exe = std::env::current_exe().unwrap_or_else(|_| "bb1".into());
+    let child = Command::new(exe).args(["--stream", address, "--label", label]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn();
+    let mut child = match child {
+        Ok(c) => c,
+        Err(e) => {
+            m.last_ended = Some(format!("Couldn't start the stream window: {e}"));
+            return;
+        }
+    };
+    let shown = if label.is_empty() { store::host_of(address) } else { label.to_string() };
+    let pid = child.id();
+    if let Some(out) = child.stdout.take() {
+        let (model, proxy) = (model.clone(), proxy.clone());
+        std::thread::spawn(move || {
+            let mut ended = None;
+            for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                let Some(rest) = line.strip_prefix('@') else { continue };
+                let (kind, text) = rest.split_once(' ').unwrap_or((rest, ""));
+                let mut m = model.lock().unwrap();
+                if let Some(st) = m.stream.as_mut().filter(|st| st.child.id() == pid) {
                     match kind {
                         "status" => {
-                            s.status = text.to_string();
+                            st.status = text.to_string();
                             if !text.starts_with("Type the") {
-                                s.asking_code = None;
+                                st.asking_code = None;
                             }
                         }
                         "connected" => {
-                            s.connected = true;
-                            s.asking_code = None;
-                            s.status = format!("Connected to {text}");
+                            st.connected = true;
+                            st.asking_code = None;
+                            st.label = text.to_string();
+                            st.status = "Connected".into();
                         }
-                        "ask-code" => s.asking_code = Some(text.to_string()),
-                        "paired" => s.status = format!("Paired with {text}"),
-                        "notice" => s.status = text.to_string(),
-                        "ended" => s.ended = Some(text.to_string()),
+                        "ask-code" => st.asking_code = Some(text.to_string()),
+                        "paired" => st.status = format!("Paired with {text}"),
+                        "notice" => st.status = text.to_string(),
+                        "ended" => ended = Some(text.to_string()),
                         _ => {}
                     }
-                    drop(s);
-                    ctx.request_repaint();
                 }
-                let mut s = state.lock().unwrap();
-                if s.ended.is_none() {
-                    s.ended = Some("The stream window closed.".into());
-                }
-                ctx.request_repaint();
-            });
-        }
-        let stdin = child.stdin.take();
-        self.stream = Some(StreamProc { label: label.to_string(), child, stdin, state });
-        self.settings.last_address = Some(address.to_string());
-        self.settings.save();
-    }
-
-    fn disconnect(&mut self) {
-        if let Some(mut s) = self.stream.take() {
-            // SIGTERM: the stream window says goodbye to the host and closes.
-            unsafe { libc_kill(s.child.id() as i32, 15) };
-            std::thread::spawn(move || {
-                let _ = s.child.wait();
-            });
-        }
-    }
-
-    fn send_code(&mut self) {
-        let code: String = self.code.chars().filter(|c| c.is_ascii_digit()).collect();
-        if let Some(s) = &mut self.stream
-            && let Some(stdin) = s.stdin.as_mut()
-        {
-            let _ = writeln!(stdin, "{code}");
-            let _ = stdin.flush();
-            s.state.lock().unwrap().asking_code = None;
-        }
-        self.code.clear();
-    }
-
-    fn start_sharing(&mut self, ctx: &egui::Context) {
-        *self.share.lock().unwrap() = Share::Starting;
-        let (share, view, settings, ctx) = (self.share.clone(), self.host_view.clone(), self.settings.clone(), ctx.clone());
-        std::thread::spawn(move || {
-            let events = Arc::new(UiHostEvents { view, ctx: ctx.clone() });
-            let result = Sharing::start(events, &settings, false);
-            let mut s = share.lock().unwrap();
-            match result {
-                Ok(sharing) => {
-                    if matches!(*s, Share::Starting) {
-                        *s = Share::On(sharing);
-                    } else {
-                        sharing.stop(); // turned off while starting
-                    }
-                }
-                Err(e) => {
-                    logi!("host: couldn't share: {e}");
-                    *s = Share::Failed(e);
-                }
+                drop(m);
+                let _ = proxy.send_event(UserEvent::Push);
             }
-            ctx.request_repaint();
-        });
-    }
-
-    fn stop_sharing(&mut self) {
-        let old = std::mem::replace(&mut *self.share.lock().unwrap(), Share::Off);
-        if let Share::On(s) = old {
-            s.stop();
-        }
-        *self.host_view.lock().unwrap() = HostView::default();
-    }
-
-    fn computers(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Your computers");
-        ui.add_space(4.0);
-        let mut entries = self.directory.entries();
-        entries.retain(|e| !e.name.eq_ignore_ascii_case(&self.me));
-        if entries.is_empty() {
-            ui.label(if self.directory.tailscale_running() {
-                "Looking for computers sharing with bb1…"
-            } else {
-                "Looking on the home network… (Tailscale isn't running, so only computers here show up.)"
-            });
-        }
-        let busy = self.stream.as_ref().is_some_and(|s| s.state.lock().unwrap().ended.is_none());
-        let mut connect_to = None;
-        for e in &entries {
-            ui.horizontal(|ui| {
-                let dot = if e.online { egui::Color32::from_rgb(60, 190, 90) } else { egui::Color32::GRAY };
-                ui.colored_label(dot, "●");
-                ui.label(egui::RichText::new(&e.name).strong());
-                if let Some(ms) = self.directory.latency_ms(&e.name) {
-                    ui.weak(format!("{ms:.0} ms"));
-                }
-                if !e.quiet && e.online {
-                    ui.weak("(asks for a code)");
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if let Some(address) = &e.address
-                        && e.online
-                        && ui.add_enabled(!busy, egui::Button::new("Connect")).clicked()
-                    {
-                        connect_to = Some((address.clone(), e.name.clone()));
-                    }
-                });
-            });
-        }
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            let field = ui.add(egui::TextEdit::singleline(&mut self.address).hint_text("Address or name (Tailscale IP, mac.local, …)").desired_width(300.0));
-            let go = ui.add_enabled(!busy && !self.address.trim().is_empty(), egui::Button::new("Connect")).clicked()
-                || (field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !self.address.trim().is_empty());
-            if go && !busy {
-                connect_to = Some((self.address.trim().to_string(), String::new()));
-            }
-        });
-        if let Some((address, label)) = connect_to {
-            self.connect(ui.ctx(), &address, &label);
-        }
-
-        // The stream's state.
-        let mut ask = None;
-        let mut ended_now = None;
-        if let Some(s) = &self.stream {
-            let st = s.state.lock().unwrap();
-            if let Some(e) = &st.ended {
-                ended_now = Some(e.clone());
-            } else {
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.label(format!("{} — {}", s.label, st.status));
-                });
-                ask = st.asking_code.clone();
-            }
-        }
-        if let Some(e) = ended_now {
-            self.stream = None;
-            if e != "Disconnected." {
-                self.last_ended = Some(e);
-            }
-        }
-        if let Some(host) = ask {
-            ui.group(|ui| {
-                ui.label(format!("{host} shows a 6-digit code. Type it here:"));
-                ui.horizontal(|ui| {
-                    let f = ui.add(egui::TextEdit::singleline(&mut self.code).desired_width(120.0).font(egui::TextStyle::Heading));
-                    f.request_focus();
-                    let enter = f.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    if ui.button("Pair").clicked() || enter {
-                        self.send_code();
-                    }
-                    if ui.button("Cancel").clicked() {
-                        self.code.clear();
-                        self.send_code();
-                    }
-                });
-            });
-        }
-        if self.stream.is_some() {
-            if ui.button("Disconnect").clicked() {
-                self.disconnect();
-            }
-        } else if let Some(e) = &self.last_ended {
-            ui.add_space(4.0);
-            ui.colored_label(egui::Color32::from_rgb(220, 120, 60), e);
-        }
-    }
-
-    fn sharing(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Share this computer");
-        ui.add_space(4.0);
-        let state = match &*self.share.lock().unwrap() {
-            Share::Off => 0,
-            Share::Starting => 1,
-            Share::On(_) => 2,
-            Share::Failed(_) => 3,
-        };
-        let mut on = state == 1 || state == 2;
-        if ui.checkbox(&mut on, format!("Share {} with my other computers", self.me)).changed() {
-            self.settings.sharing = on;
-            self.settings.save();
-            if on {
-                self.start_sharing(ui.ctx());
-            } else {
-                self.stop_sharing();
-            }
-        }
-        match &*self.share.lock().unwrap() {
-            Share::Starting => {
-                ui.label("Waiting for permission: allow sharing the screen and remote control in the desktop's dialog (asked only once).");
-            }
-            Share::Failed(e) => {
-                ui.colored_label(egui::Color32::from_rgb(220, 120, 60), format!("Couldn't share: {e}"));
-            }
-            Share::On(s) => {
-                let view = self.host_view.lock().unwrap();
-                if let Some((device, code)) = &view.pairing {
-                    ui.group(|ui| {
-                        ui.label(format!("{device} wants to connect. Type this code on it:"));
-                        ui.label(egui::RichText::new(code).size(34.0).monospace().strong());
+            // The stream window closed.
+            let mut m = model.lock().unwrap();
+            if m.stream.as_ref().is_some_and(|st| st.child.id() == pid) {
+                if let Some(mut st) = m.stream.take() {
+                    std::thread::spawn(move || {
+                        let _ = st.child.wait();
                     });
                 }
-                let viewers: Vec<Viewer> = s.host().viewers();
-                if viewers.is_empty() {
-                    ui.weak("Sharing. Nobody is watching.");
-                }
-                let host = s.host().clone();
-                for v in viewers {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(&v.name).strong());
-                        let (mut m, mut k, mut c) = (v.mouse, v.keyboard, v.controller);
-                        if ui.checkbox(&mut m, "mouse").changed() {
-                            host.set_access(v.id, Access::Mouse, m);
-                        }
-                        if ui.checkbox(&mut k, "keyboard").changed() {
-                            host.set_access(v.id, Access::Keyboard, k);
-                        }
-                        if ui.checkbox(&mut c, "controller").changed() {
-                            host.set_access(v.id, Access::Controller, c);
-                        }
-                        if ui.button("Disconnect").clicked() {
-                            host.disconnect(v.id);
-                        }
-                    });
-                }
-                ui.weak("Sharing stops when this window closes. To share without a window: bb1 --host");
-            }
-            Share::Off => {}
-        }
-        let mut changed = false;
-        changed |= ui.checkbox(&mut self.settings.allow_tailscale, "Computers on my Tailscale account connect without a code").changed();
-        changed |= ui.checkbox(&mut self.settings.allow_pairing, "New computers can pair with a 6-digit code").changed();
-        if changed {
-            self.settings.save();
-            if let Share::On(s) = &*self.share.lock().unwrap() {
-                s.apply_settings(&self.settings);
-            }
-        }
-    }
-
-    fn preferences(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Settings");
-        ui.add_space(4.0);
-        let mut changed = false;
-        changed |= ui.checkbox(&mut self.settings.sound, "Play the other computer's sound").changed();
-        changed |= ui.checkbox(&mut self.settings.clipboard, "Share the clipboard").changed();
-        let layout = ModifierLayout::from_id(&self.settings.modifier_layout);
-        ui.horizontal(|ui| {
-            ui.label("Mac's Command key is:");
-            for (l, name) in [
-                (ModifierLayout::Standard, "Super"),
-                (ModifierLayout::MacPositions, "Alt (Mac key positions)"),
-                (ModifierLayout::CtrlIsCommand, "Ctrl"),
-            ] {
-                if ui.radio(layout == l, name).clicked() {
-                    self.settings.modifier_layout = l.id().to_string();
-                    changed = true;
+                let reason = ended.unwrap_or_else(|| "The stream window closed.".into());
+                if reason != "Disconnected." {
+                    m.last_ended = Some(reason);
                 }
             }
+            drop(m);
+            let _ = proxy.send_event(UserEvent::Push);
         });
-        if changed {
-            self.settings.save();
-        }
-        ui.add_space(4.0);
-        ui.weak(format!(
-            "In the stream window: Ctrl+Alt+Enter full screen, Ctrl+Alt+← / → the other screen. Settings apply to the next connection. Logs: {}",
-            store::log_dir().display()
-        ));
     }
+    let stdin = child.stdin.take();
+    m.stream = Some(StreamProc { label: shown, child, stdin, status: "Connecting…".into(), connected: false, asking_code: None });
+    m.settings.last_address = Some(address.to_string());
+    m.settings.save();
 }
 
-impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::Frame::central_panel(ui.style()).show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("bb1").size(22.0).strong());
-                    ui.weak(crate::core::updater::build_name(crate::core::updater::BUILD));
-                });
-                ui.add_space(8.0);
-                self.computers(ui);
-                ui.add_space(14.0);
-                ui.separator();
-                self.sharing(ui);
-                ui.add_space(14.0);
-                ui.separator();
-                self.preferences(ui);
-            });
+fn disconnect(m: &mut Model) {
+    if let Some(mut st) = m.stream.take() {
+        // SIGTERM: the stream window says goodbye to the host and closes.
+        unsafe { kill(st.child.id() as i32, 15) };
+        std::thread::spawn(move || {
+            let _ = st.child.wait();
         });
-        // Keep the computer list and the viewers fresh.
-        ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
-    }
-
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.disconnect();
-        self.stop_sharing();
     }
 }
 
 unsafe extern "C" {
-    #[link_name = "kill"]
-    fn libc_kill(pid: i32, sig: i32) -> i32;
+    fn kill(pid: i32, sig: i32) -> i32;
 }

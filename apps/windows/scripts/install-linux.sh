@@ -8,7 +8,9 @@
 #
 # Needs (Ubuntu 25.04 or later / Debian 13; names differ on other distributions):
 #   sudo apt install libsdl3-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
-#                    libswresample-dev libavfilter-dev libavdevice-dev libpipewire-0.3-dev libclang-dev clang
+#                    libswresample-dev libavfilter-dev libavdevice-dev libpipewire-0.3-dev libclang-dev clang \
+#                    libwebkit2gtk-4.1-dev libgtk-3-dev
+#   and Bun (https://bun.sh) or Node.js, for the window's UI (apps/ui).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -24,12 +26,23 @@ if [[ "${1:-}" == "--uninstall" ]]; then
 fi
 
 missing=()
-for lib in sdl3 libavcodec libswscale libpipewire-0.3; do
+for lib in sdl3 libavcodec libswscale libpipewire-0.3 webkit2gtk-4.1; do
   pkg-config --exists "$lib" || missing+=("$lib")
 done
 if (( ${#missing[@]} )); then
   echo "Missing development libraries: ${missing[*]}"
-  echo "On Ubuntu: sudo apt install libsdl3-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev libavfilter-dev libavdevice-dev libpipewire-0.3-dev libclang-dev clang"
+  echo "On Ubuntu: sudo apt install libsdl3-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev libavfilter-dev libavdevice-dev libpipewire-0.3-dev libclang-dev clang libwebkit2gtk-4.1-dev libgtk-3-dev"
+  exit 1
+fi
+
+# The window's UI (apps/ui, React): built with Bun (or npm) into one page the binary embeds.
+BUN="$(command -v bun || echo "$HOME/.bun/bin/bun")"
+if [[ -x "$BUN" ]]; then
+  (cd ../ui && "$BUN" install --frozen-lockfile && "$BUN" run build)
+elif command -v npm >/dev/null; then
+  (cd ../ui && npm install && npm run build)
+else
+  echo "Building bb1's window needs Bun (https://bun.sh) or Node.js."
   exit 1
 fi
 

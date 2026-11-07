@@ -76,7 +76,8 @@ The same app, built from the same code (`src/core`), with Linux's parts in `src/
 
 ```sh
 sudo apt install libsdl3-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
-                 libavfilter-dev libavdevice-dev libpipewire-0.3-dev libclang-dev clang
+                 libavfilter-dev libavdevice-dev libpipewire-0.3-dev libclang-dev clang libwebkit2gtk-4.1-dev libgtk-3-dev
+# and Bun (https://bun.sh) or Node.js, for the window's UI
 scripts/install-linux.sh                    # → ~/.local/bin/bb1, and bb1 in your apps
 scripts/install-linux.sh --share-at-login   # also share this computer whenever you log in
 ```
@@ -96,7 +97,7 @@ No signing, root or kernel module needed.
 |---|---|
 | Stream window | SDL3: window, NV12 texture (BT.709 limited range), keyboard grab (Wayland shortcuts-inhibit / X11 grab), sound, clipboard, controllers |
 | Decode | FFmpeg's libavcodec: NVIDIA through CUDA, Intel/AMD through VA-API, else the CPU (`BB1_DECODER=cpu` forces it) |
-| Main window | egui (`src/linux/ui.rs`); the stream runs as its own process (`bb1 --stream ADDRESS`) |
+| Main window | The shared React UI ([apps/ui](../ui/README.md)) in a WebKitGTK web view (wry + tao, `src/linux/ui.rs`); the stream runs as its own process (`bb1 --stream ADDRESS`) |
 | Screen | The desktop portal's ScreenCast (`src/linux/portal.rs`) → PipeWire frames (`capture.rs`); the pointer arrives as metadata, so it's left out for clients that draw their own |
 | Encode | libavcodec: NVENC with the Windows host's low-latency settings, else x264 on the CPU (`encoder.rs`) |
 | Input | The portal's RemoteDesktop session: keys as Linux key codes, absolute pointer, wheel clicks and smooth scrolling (`input.rs`) |

@@ -10,6 +10,14 @@ fn main() {
     if let Some(b) = build.filter(|b| !b.is_empty() && b.chars().all(|c| c.is_ascii_digit())) {
         println!("cargo:rustc-env=BB1_BUILD={b}");
     }
+    // The shared React UI (apps/ui), built to one self-contained page: embedded when it's there.
+    println!("cargo::rustc-check-cfg=cfg(bb1_ui)");
+    println!("cargo:rerun-if-changed=../ui/dist/index.html");
+    if std::path::Path::new("../ui/dist/index.html").exists() {
+        println!("cargo:rustc-cfg=bb1_ui");
+    } else if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        println!("cargo:warning=apps/ui isn't built: the window will say how (cd apps/ui && bun install && bun run build)");
+    }
     // Icon, manifest (modern controls, per-monitor DPI) and version info for bb1.exe.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         println!("cargo:rerun-if-changed=res");
