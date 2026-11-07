@@ -73,6 +73,8 @@ pipewire = "0.10.1"
 zbus = "4.4.0"
 wry = "0.57.1"
 tao = "0.37.2"
+# Same GTK as tao, to paint the window's title bar in bb1's background colour.
+gtk = "0.18.2"
 
 [build-dependencies]
 embed-resource = "3.0.12"

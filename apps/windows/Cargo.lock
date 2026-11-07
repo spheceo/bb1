@@ -236,6 +236,7 @@ dependencies = [
  "embed-resource",
  "ffmpeg-next",
  "getrandom 0.4.3",
+ "gtk",
  "hkdf",
  "hmac",
  "mdns-sd",

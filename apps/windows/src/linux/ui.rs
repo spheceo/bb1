@@ -105,6 +105,8 @@ pub fn run() {
         .build(&event_loop)
         .expect("couldn't open bb1's window");
 
+    dark_title_bar();
+
     let settings = Settings::load();
     let start_sharing = settings.sharing;
     let model: Shared = Arc::new(Mutex::new(Model {
@@ -181,6 +183,23 @@ pub fn run() {
             _ => {}
         }
     });
+}
+
+/// The window's title bar (GTK's header bar) in the page's background colour, so the window is one
+/// piece of graphite.
+fn dark_title_bar() {
+    use gtk::prelude::*;
+    let css = gtk::CssProvider::new();
+    let style = "headerbar, .titlebar, headerbar:backdrop, .titlebar:backdrop { \
+        background: #09090a; background-image: none; border: none; box-shadow: none; color: #f2f3f5; } \
+        headerbar .title { color: #f2f3f5; font-weight: 600; } \
+        headerbar:backdrop .title { color: rgba(255, 255, 255, 0.5); } \
+        window.csd, window.csd decoration { background: #09090a; }";
+    if css.load_from_data(style.as_bytes()).is_ok()
+        && let Some(screen) = gtk::gdk::Screen::default()
+    {
+        gtk::StyleContext::add_provider_for_screen(&screen, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+    }
 }
 
 fn icon() -> Option<Icon> {
