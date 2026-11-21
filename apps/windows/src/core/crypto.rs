@@ -163,6 +163,52 @@ pub fn open_audio(datagram: &[u8], key: &[u8; 32]) -> Option<(u32, u64, Vec<u8>)
     Some((seq, capture_us, pcm))
 }
 
+/// Sound for clients that say they decode "opus" (bb1 for Windows and Linux): 5 ms Opus frames,
+/// each datagram carrying the newest frame and copies of two earlier ones (20 and 40 ms before), so a
+/// frame is only missing if all three datagrams are. Header as PCM's, with byte 1 the frame count;
+/// sealed: per frame, newest first, its age in frames (u8), length (u16 LE) and bytes.
+/// (PCM was ~1.5 Mbps a copy: half of a far friend's whole line, LEPC 2026-11-21.)
+pub const AUDIO_OPUS_TYPE: u8 = 0x04;
+
+/// Host side: seal Opus frames (age in frames behind `seq`, bytes) as one datagram.
+pub fn seal_opus(seq: u32, capture_us: u64, frames: &[(u8, &[u8])], key: &[u8; 32]) -> Vec<u8> {
+    let mut d = vec![AUDIO_OPUS_TYPE, frames.len() as u8];
+    d.extend_from_slice(&seq.to_le_bytes());
+    d.extend_from_slice(&capture_us.to_le_bytes());
+    let mut body = Vec::with_capacity(frames.iter().map(|(_, f)| f.len() + 3).sum());
+    for (age, frame) in frames {
+        body.push(*age);
+        body.extend_from_slice(&(frame.len() as u16).to_le_bytes());
+        body.extend_from_slice(frame);
+    }
+    let n = nonce(*b"OPU\0", seq as u64);
+    let sealed = cipher(key).encrypt(&Nonce::from(n), Payload { msg: &body, aad: &d }).expect("sealing can't fail");
+    d.extend_from_slice(&sealed);
+    d
+}
+
+/// Returns each frame as (its seq, Opus bytes) if the datagram is genuine.
+pub fn open_opus(datagram: &[u8], key: &[u8; 32]) -> Option<Vec<(u32, Vec<u8>)>> {
+    if datagram.len() <= AUDIO_HEADER + 16 || datagram[0] != AUDIO_OPUS_TYPE {
+        return None;
+    }
+    let seq = u32::from_le_bytes(datagram[2..6].try_into().ok()?);
+    let n = nonce(*b"OPU\0", seq as u64);
+    let body = cipher(key)
+        .decrypt(&Nonce::from(n), Payload { msg: &datagram[AUDIO_HEADER..], aad: &datagram[..AUDIO_HEADER] })
+        .ok()?;
+    let mut frames = Vec::with_capacity(datagram[1] as usize);
+    let mut rest = &body[..];
+    while rest.len() >= 3 {
+        let age = rest[0] as u32;
+        let len = u16::from_le_bytes([rest[1], rest[2]]) as usize;
+        let frame = rest.get(3..3 + len)?;
+        frames.push((seq.wrapping_sub(age), frame.to_vec()));
+        rest = &rest[3 + len..];
+    }
+    Some(frames)
+}
+
 /// Host side: seal 5 ms of PCM as an audio datagram (header authenticated, PCM encrypted).
 pub fn seal_audio(seq: u32, capture_us: u64, pcm: &[u8], key: &[u8; 32]) -> Vec<u8> {
     let mut d = vec![AUDIO_TYPE, 0];
@@ -257,5 +303,8 @@ pub mod tests {
         assert!(udp_hello_valid(&hello, &keys.video) && !udp_hello_valid(&hello, &keys.client_to_host));
         // The host's sealing is what the client opens (and what the Mac host makes).
         assert_eq!(seal_audio(99, 555, &h(&v, "audioPcm"), &keys.video), h(&v, "audioPacket"));
+        let sealed = seal_opus(100, 555, &[(0, &[1, 2, 3][..]), (4, &[9][..])], &keys.video);
+        assert_eq!(open_opus(&sealed, &keys.video), Some(vec![(100, vec![1, 2, 3]), (96, vec![9])]));
+        assert_eq!(open_audio(&sealed, &keys.video), None);
     }
 }

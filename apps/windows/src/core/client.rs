@@ -583,7 +583,8 @@ fn handshake_with(stream: &mut TcpStream, target: &Target, purpose: Option<&str>
         ecdh_pub: Some(eph.public.to_vec()),
         app_build: Some(crate::core::updater::BUILD),
         purpose: purpose.map(String::from),
-        codecs: Some(vec!["h264".into()]),
+        // "opus": this client takes its sound as Opus from a host that can send it (a PC; Macs send PCM).
+        codecs: Some(vec!["h264".into(), "opus".into()]),
     };
     write_frame(stream, &Msg::ClientHello(v(hello)).encode()).map_err(|e| End::Closed(format!("send failed ({e})")))?;
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
@@ -1188,6 +1189,20 @@ fn handle_datagram(shared: &Shared, data: &[u8]) {
                 shared.counters.audio_packets.fetch_add(1, Relaxed);
                 if shared.sound_wanted.load(Relaxed) {
                     shared.audio.write(seq, &pcm);
+                }
+            }
+        }
+        return;
+    }
+    if data.first() == Some(&crypto::AUDIO_OPUS_TYPE) {
+        if let Some(keys) = vs.keys.as_ref() {
+            if let Some(frames) = crypto::open_opus(data, &keys.video) {
+                shared.counters.audio_packets.fetch_add(1, Relaxed);
+                if shared.sound_wanted.load(Relaxed) {
+                    // Oldest first: a late copy of the one the buffer ran dry waiting for counts as that.
+                    for (seq, frame) in frames.into_iter().rev() {
+                        shared.audio.write_opus(seq, &frame);
+                    }
                 }
             }
         }

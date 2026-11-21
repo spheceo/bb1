@@ -15,6 +15,10 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      # libopus (sound) builds with CMake from the copy in audiopus_sys, which asks for CMake 3.1;
+      # CMake 4 refuses anything under 3.5 unless told this.
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
     defaults:
       run:
         working-directory: apps/windows

@@ -4,6 +4,8 @@
 //! 15 s without trouble lowers it again (down to 30 ms). Too much queued: skip ahead.
 //! A lost packet is filled with the one before it played backwards and fading out (it joins that one
 //! without a jump), and the packet after fades in over 1 ms: a gap is a soft dip, not a click.
+//! Opus frames (from a PC host) are kept as they came and decoded in order as they're played, so the
+//! decoder sees one stream; a missing one is Opus's own concealment instead.
 
 use crate::core::crypto::AUDIO_FRAMES_PER_PACKET as FRAMES;
 use crate::core::now_us;
@@ -33,6 +35,12 @@ struct Inner {
     last_good: bool,
     /// The play head is on the first packet after a filled-in gap.
     fade_in: bool,
+    /// Per slot: an Opus frame not decoded yet (its bytes in `opus_frames`).
+    slot_opus: [bool; SLOTS],
+    opus_frames: Vec<Vec<u8>>,
+    /// Made with the first Opus frame. `opus_playing`: the last packet played was Opus.
+    decoder: Option<opus::Decoder>,
+    opus_playing: bool,
 }
 
 pub struct JitterBuffer {
@@ -58,6 +66,10 @@ impl Default for JitterBuffer {
                 last_pcm: vec![0; FRAMES * 2],
                 last_good: false,
                 fade_in: false,
+                slot_opus: [false; SLOTS],
+                opus_frames: (0..SLOTS).map(|_| Vec::with_capacity(512)).collect(),
+                decoder: None,
+                opus_playing: false,
             }),
         }
     }
@@ -78,6 +90,62 @@ impl Inner {
         }
     }
 
+    /// Where packet `seq` goes, or None if it's too late or a copy of one we have.
+    fn admit(&mut self, seq: u32) -> Option<usize> {
+        if let Some(p) = self.play_seq {
+            if seq.wrapping_sub(p) > 0x8000_0000 {
+                return None; // already played
+            }
+            if self.dry_pending {
+                self.dry_pending = false;
+                if seq.wrapping_sub(p) <= 2 {
+                    // The packet we ran out waiting for showed up late: the network needs more cushion.
+                    self.underruns += 1;
+                    self.target = (self.target + 2).min(MAX_TARGET);
+                    self.calm_since_us = now_us();
+                } else {
+                    self.reset(); // the host paused (it doesn't send silence)
+                }
+            } else if seq.wrapping_sub(p) >= SLOTS as u32 {
+                self.reset();
+            }
+        }
+        let slot = seq as usize % SLOTS;
+        if self.slot_valid[slot] && self.slot_seq[slot] == seq {
+            return None; // duplicate copy
+        }
+        Some(slot)
+    }
+
+    /// Packet `seq` is in `slot` now.
+    fn stored(&mut self, seq: u32, slot: usize) {
+        self.slot_seq[slot] = seq;
+        self.slot_valid[slot] = true;
+        if self.play_seq.is_none() {
+            self.play_seq = Some(seq);
+            self.play_offset = 0;
+        }
+        if self.highest.is_none_or(|h| seq.wrapping_sub(h) < 0x8000_0000) {
+            self.highest = Some(seq);
+        }
+    }
+
+    /// The Opus frame in `slot` (or, with None, the decoder's guess at a missing one) as PCM there.
+    fn decode_opus(&mut self, slot: usize, frame: Option<usize>) -> bool {
+        let Some(decoder) = self.decoder.as_mut() else { return false };
+        let base = slot * FRAMES * 2;
+        let input: &[u8] = match frame {
+            Some(f) => &self.opus_frames[f],
+            None => &[],
+        };
+        let ok = matches!(decoder.decode(input, &mut self.samples[base..base + FRAMES * 2], false), Ok(n) if n == FRAMES);
+        if !ok {
+            self.samples[base..base + FRAMES * 2].fill(0);
+        }
+        self.slot_opus[slot] = false;
+        ok
+    }
+
     fn reset(&mut self) {
         self.slot_valid = [false; SLOTS];
         self.play_seq = None;
@@ -94,42 +162,33 @@ impl JitterBuffer {
     /// `pcm`: 240 frames of interleaved little-endian i16 stereo.
     pub fn write(&self, seq: u32, pcm: &[u8]) {
         let mut s = self.inner.lock().unwrap();
-        if let Some(p) = s.play_seq {
-            if seq.wrapping_sub(p) > 0x8000_0000 {
-                return; // already played
-            }
-            if s.dry_pending {
-                s.dry_pending = false;
-                if seq.wrapping_sub(p) <= 2 {
-                    // The packet we ran out waiting for showed up late: the network needs more cushion.
-                    s.underruns += 1;
-                    s.target = (s.target + 2).min(MAX_TARGET);
-                    s.calm_since_us = now_us();
-                } else {
-                    s.reset(); // the host paused (it doesn't send silence)
-                }
-            } else if seq.wrapping_sub(p) >= SLOTS as u32 {
-                s.reset();
-            }
-        }
-        let slot = seq as usize % SLOTS;
-        if s.slot_valid[slot] && s.slot_seq[slot] == seq {
-            return; // duplicate copy
-        }
+        let Some(slot) = s.admit(seq) else { return };
         let base = slot * FRAMES * 2;
         let n = (pcm.len() / 2).min(FRAMES * 2);
         for i in 0..n {
             s.samples[base + i] = i16::from_le_bytes([pcm[i * 2], pcm[i * 2 + 1]]);
         }
-        s.slot_seq[slot] = seq;
-        s.slot_valid[slot] = true;
-        if s.play_seq.is_none() {
-            s.play_seq = Some(seq);
-            s.play_offset = 0;
+        s.slot_opus[slot] = false;
+        s.stored(seq, slot);
+    }
+
+    /// One 5 ms Opus frame (decoded when it's played).
+    pub fn write_opus(&self, seq: u32, frame: &[u8]) {
+        let mut s = self.inner.lock().unwrap();
+        if s.decoder.is_none() {
+            match opus::Decoder::new(48_000, opus::Channels::Stereo) {
+                Ok(d) => s.decoder = Some(d),
+                Err(e) => {
+                    crate::logi!("sound: no Opus decoder ({e})");
+                    return;
+                }
+            }
         }
-        if s.highest.is_none_or(|h| seq.wrapping_sub(h) < 0x8000_0000) {
-            s.highest = Some(seq);
-        }
+        let Some(slot) = s.admit(seq) else { return };
+        s.opus_frames[slot].clear();
+        s.opus_frames[slot].extend_from_slice(frame);
+        s.slot_opus[slot] = true;
+        s.stored(seq, slot);
     }
 
     /// Fills `out` (interleaved stereo i16) completely; silence where there's nothing to play.
@@ -163,14 +222,29 @@ impl JitterBuffer {
                 break;
             };
             let slot = p as usize % SLOTS;
-            let have = s.slot_valid[slot] && s.slot_seq[slot] == p;
+            let mut have = s.slot_valid[slot] && s.slot_seq[slot] == p;
             if !have && s.depth() <= 1 {
                 s.buffering = true;
                 s.dry_pending = true;
                 break;
             }
-            let n = (frames - i).min(FRAMES - s.play_offset);
             let off = s.play_offset;
+            if off == 0 {
+                if have && s.slot_opus[slot] {
+                    s.decode_opus(slot, Some(slot));
+                    s.opus_playing = true;
+                } else if have {
+                    s.opus_playing = false;
+                } else if s.opus_playing && s.decode_opus(slot, None) {
+                    // Missing in an Opus stream: the decoder fills it in (and it's a packet we have now,
+                    // so a late copy is ignored).
+                    s.concealed += 1;
+                    s.slot_seq[slot] = p;
+                    s.slot_valid[slot] = true;
+                    have = true;
+                }
+            }
+            let n = (frames - i).min(FRAMES - s.play_offset);
             if have {
                 let base = (slot * FRAMES + off) * 2;
                 out[i * 2..(i + n) * 2].copy_from_slice(&s.samples[base..base + n * 2]);
@@ -252,6 +326,47 @@ mod tests {
         assert!(out.iter().all(|&s| s == 0)); // seq 0
         b.read(&mut out);
         assert!(out.iter().all(|&s| s == 1));
+    }
+
+    /// A 440 Hz tone through Opus with every 7th frame lost: it plays all the way, with the decoder
+    /// filling the gaps (no silent packets), and copies that arrive twice are ignored.
+    #[test]
+    fn opus_frames_play_in_order_and_gaps_are_concealed() {
+        let mut enc = opus::Encoder::new(48_000, opus::Channels::Stereo, opus::Application::LowDelay).unwrap();
+        let b = JitterBuffer::default();
+        let mut t = 0usize;
+        let mut frames = Vec::new();
+        for _ in 0..40u32 {
+            let pcm: Vec<i16> = (0..FRAMES)
+                .flat_map(|_| {
+                    t += 1;
+                    let v = ((t as f32 * 440.0 * std::f32::consts::TAU / 48_000.0).sin() * 8000.0) as i16;
+                    [v, v]
+                })
+                .collect();
+            let mut out = [0u8; 1000];
+            let n = enc.encode(&pcm, &mut out).unwrap();
+            frames.push(out[..n].to_vec());
+        }
+        let send = |seq: usize| {
+            if seq % 7 != 3 {
+                b.write_opus(seq as u32, &frames[seq]);
+                b.write_opus(seq as u32, &frames[seq]); // a copy
+            }
+        };
+        (0..10).for_each(send);
+        let mut out = vec![0i16; FRAMES * 2];
+        let mut silent = 0;
+        for i in 0..30 {
+            send(10 + i); // one arrives for each one played
+            b.read(&mut out);
+            if out.iter().all(|&x| x.unsigned_abs() < 50) {
+                silent += 1;
+            }
+        }
+        // (The very first frame is the decoder starting up.)
+        assert!(silent <= 1, "{silent} silent packets");
+        assert_eq!(b.take_stats().0, 4, "seq 3, 10, 17, 24 concealed");
     }
 
     #[test]

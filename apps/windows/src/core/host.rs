@@ -250,6 +250,10 @@ struct Session {
     recent_audio: Mutex<VecDeque<Vec<u8>>>,
     /// Silent sound packets in a row (only the first ones of a pause are sent).
     silent_run: AtomicU32,
+    /// It decodes Opus (bb1 for Windows and Linux): its sound goes as Opus, not PCM.
+    opus: bool,
+    /// Its last few Opus frames (seq, bytes), newest first, for the copies in later datagrams.
+    recent_opus: Mutex<VecDeque<(u32, Arc<Vec<u8>>)>>,
     ended: AtomicBool,
     /// Out of the session list (end_session started): its input no longer counts.
     left: AtomicBool,
@@ -337,6 +341,9 @@ struct Shared {
     own_login: Mutex<Option<(String, Instant)>>,
     /// Each computer's last quality (share of full bitrate, and its line's usual loss) when it left, by device ID.
     last_rates: Mutex<HashMap<String, (RateState, Instant)>>,
+    /// One Opus encoder for every viewer that takes Opus (made when the first one connects); None
+    /// inside if it couldn't be made (they get PCM then).
+    opus: Mutex<Option<Option<opus::Encoder>>>,
     /// Announces this host on the home network (Bonjour), like the Mac host.
     bonjour: Option<mdns_sd::ServiceDaemon>,
     /// Who may sign in (changeable while sharing).
@@ -379,6 +386,7 @@ impl Host {
             allow_pairing: AtomicBool::new(cfg.allow_pairing),
             displays: Mutex::new(None),
             last_rates: Mutex::new(HashMap::new()),
+            opus: Mutex::new(None),
         });
         // Rumble from the virtual controllers goes back to the viewer that owns them.
         {
@@ -413,19 +421,40 @@ impl Host {
     pub fn audio_chunk(&self, pcm: &[u8], capture_us: u64) {
         let silent = pcm.chunks_exact(2).all(|c| i16::from_le_bytes([c[0], c[1]]).unsigned_abs() <= 2);
         let sessions = self.shared.sessions.lock().unwrap().clone();
+        // Encoded at most once, for every viewer that takes Opus.
+        let mut opus_frame: Option<Option<Arc<Vec<u8>>>> = None;
         for s in sessions {
             if !s.audio.load(Relaxed) {
                 continue;
             }
             let Some(peer) = *s.udp_peer.lock().unwrap() else { continue };
             let seq = s.audio_seq.fetch_add(1, Relaxed).wrapping_add(1);
-            let mut recent = s.recent_audio.lock().unwrap();
             if !silent {
                 s.silent_run.store(0, Relaxed);
             } else if s.silent_run.fetch_add(1, Relaxed) >= SHORT_SILENCE_PACKETS {
-                recent.clear();
+                s.recent_audio.lock().unwrap().clear();
+                s.recent_opus.lock().unwrap().clear();
                 continue;
             }
+            if s.opus {
+                let frame = opus_frame.get_or_insert_with(|| encode_opus(&self.shared, pcm)).clone();
+                if let Some(frame) = frame {
+                    let mut recent = s.recent_opus.lock().unwrap();
+                    recent.push_front((seq, frame));
+                    recent.truncate(OPUS_COPY_AGES.last().copied().unwrap_or(0) as usize + 1);
+                    let frames: Vec<(u8, &[u8])> = recent
+                        .iter()
+                        .filter_map(|(q, f)| {
+                            let age = seq.wrapping_sub(*q);
+                            OPUS_COPY_AGES.contains(&(age as u8)).then_some((age as u8, f.as_slice()))
+                        })
+                        .collect();
+                    let packet = crypto::seal_opus(seq, capture_us, &frames, &s.keys.video);
+                    let _ = self.shared.udp.send_to(&packet, peer);
+                    continue;
+                }
+            }
+            let mut recent = s.recent_audio.lock().unwrap();
             let packet = crypto::seal_audio(seq, capture_us, pcm, &s.keys.video);
             let _ = self.shared.udp.send_to(&packet, peer);
             // Each packet goes out a second time 4 packets (20 ms) later, so a lost packet isn't a gap.
@@ -690,6 +719,45 @@ fn handshake(shared: &Arc<Shared>, stream: &mut TcpStream, connection_id: u64) -
 const SHORT_SILENCE_PACKETS: u32 = 20;
 /// How many packets later each sound packet's second copy goes out (5 ms each).
 const AUDIO_COPY_DELAY_PACKETS: usize = 4;
+/// Which Opus frames each datagram carries, in frames behind the newest: it, 20 ms and 40 ms before.
+/// About 0.3 Mbps in all, against PCM's 3 Mbps for two copies.
+const OPUS_COPY_AGES: [u8; 3] = [0, 4, 8];
+const OPUS_BITRATE: i32 = 128_000;
+
+/// 5 ms of 48 kHz stereo PCM (little-endian i16) as one Opus frame; None if there's no encoder.
+fn encode_opus(shared: &Shared, pcm: &[u8]) -> Option<Arc<Vec<u8>>> {
+    let mut enc = shared.opus.lock().unwrap();
+    let enc = enc.get_or_insert_with(|| {
+        // Restricted low delay: CELT only, no look-ahead to wait for (a game's sound, not a call).
+        let made = opus::Encoder::new(48_000, opus::Channels::Stereo, opus::Application::LowDelay).and_then(|mut e| {
+            e.set_bitrate(opus::Bitrate::Bits(OPUS_BITRATE))?;
+            Ok(e)
+        });
+        match made {
+            Ok(e) => {
+                logi!("sound: Opus at {} kbps for computers that take it", OPUS_BITRATE / 1000);
+                Some(e)
+            }
+            Err(e) => {
+                logi!("sound: no Opus encoder ({e}); sending PCM");
+                None
+            }
+        }
+    });
+    let enc = enc.as_mut()?;
+    if pcm.len() != crypto::AUDIO_FRAMES_PER_PACKET * 4 {
+        return None; // not 5 ms: Opus can't take it (send PCM)
+    }
+    let samples: Vec<i16> = pcm.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect();
+    let mut out = [0u8; 1000];
+    match enc.encode(&samples, &mut out) {
+        Ok(n) => Some(Arc::new(out[..n].to_vec())),
+        Err(e) => {
+            logi!("sound: Opus couldn't encode a frame ({e})");
+            None
+        }
+    }
+}
 
 fn plain_ip(ip: IpAddr) -> IpAddr {
     match ip {
@@ -846,6 +914,8 @@ fn stream_session(shared: &Arc<Shared>, authed: Authed, writer: (TcpStream, Stre
         audio_seq: AtomicU32::new(0),
         recent_audio: Mutex::new(VecDeque::new()),
         silent_run: AtomicU32::new(0),
+        opus: hello.codecs.as_ref().is_some_and(|c| c.iter().any(|c| c == "opus")),
+        recent_opus: Mutex::new(VecDeque::new()),
         ended: AtomicBool::new(false),
         left: AtomicBool::new(false),
         mouse: AtomicBool::new(true),

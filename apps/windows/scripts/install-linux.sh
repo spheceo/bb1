@@ -9,7 +9,7 @@
 # Needs (Ubuntu 25.04 or later / Debian 13; names differ on other distributions):
 #   sudo apt install libsdl3-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
 #                    libswresample-dev libavfilter-dev libavdevice-dev libpipewire-0.3-dev libclang-dev clang \
-#                    libwebkit2gtk-4.1-dev libgtk-3-dev
+#                    libwebkit2gtk-4.1-dev libgtk-3-dev libopus-dev
 #   and Bun (https://bun.sh) or Node.js, for the window's UI (apps/ui).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -31,7 +31,7 @@ for lib in sdl3 libavcodec libswscale libpipewire-0.3 webkit2gtk-4.1; do
 done
 if (( ${#missing[@]} )); then
   echo "Missing development libraries: ${missing[*]}"
-  echo "On Ubuntu: sudo apt install libsdl3-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev libavfilter-dev libavdevice-dev libpipewire-0.3-dev libclang-dev clang libwebkit2gtk-4.1-dev libgtk-3-dev"
+  echo "On Ubuntu: sudo apt install libsdl3-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev libavfilter-dev libavdevice-dev libpipewire-0.3-dev libclang-dev clang libwebkit2gtk-4.1-dev libgtk-3-dev libopus-dev"
   exit 1
 fi
 

@@ -37,7 +37,7 @@ Rust. `src/core` is the protocol, crypto and connection logic (any platform); `s
 | Decode | Media Foundation H.264 decoder, on the GPU through Direct3D 11 (falls back to the CPU) |
 | Display | Direct3D 11 flip-model swap chain, NV12 → RGB in a pixel shader, letterboxed |
 | Keyboard | Low-level keyboard hook; scan codes → Mac key codes (`src/core/keymap.rs`) |
-| Sound | WASAPI shared mode, behind the same adaptive jitter buffer as the Mac client |
+| Sound | WASAPI shared mode, behind the same adaptive jitter buffer as the Mac client. From a PC host it's Opus (128 kbps, 5 ms frames, each datagram with copies of the frames 20 and 40 ms before; Opus fills in a lost one); from a Mac, PCM |
 | Clipboard | Text and images (PNG/DIB); password-manager copies are skipped |
 | Controllers | SDL3 (`SDL3.dll` next to `bb1.exe`, loaded at run time; `src/win/gamepad.rs`). Host: a ViGEmBus Xbox 360 controller per viewer's pad (`vigem-client`, `src/host/input.rs`) |
 | Finding Macs | `tailscale status --json`, Bonjour (`_bb1._tcp`), and remembered pairings (with each Mac's last home address). A paired Mac is reached over the home network when it's there, else Tailscale, and the connection switches between them when one stops answering |
@@ -77,7 +77,8 @@ The same app, built from the same code (`src/core`), with Linux's parts in `src/
 
 ```sh
 sudo apt install libsdl3-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
-                 libavfilter-dev libavdevice-dev libpipewire-0.3-dev libclang-dev clang libwebkit2gtk-4.1-dev libgtk-3-dev
+                 libavfilter-dev libavdevice-dev libpipewire-0.3-dev libclang-dev clang libwebkit2gtk-4.1-dev libgtk-3-dev \
+                 libopus-dev
 # and Bun (https://bun.sh) or Node.js, for the window's UI
 scripts/install-linux.sh                    # → ~/.local/bin/bb1, and bb1 in your apps
 scripts/install-linux.sh --share-at-login   # also share this computer whenever you log in
