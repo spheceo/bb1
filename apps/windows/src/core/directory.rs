@@ -61,6 +61,8 @@ struct State {
     last_summary: String,
     peers: Vec<tailscale::Peer>,
     tailscale_running: bool,
+    /// `tailscale status` failed once after working: wait for a second failure before believing it.
+    tailscale_missed: bool,
     next_version: u64,
 }
 
@@ -153,6 +155,16 @@ impl Directory {
     fn refresh_tailscale(&self) {
         let peers = tailscale::peers();
         let running = peers.is_some();
+        // One slow or failed `tailscale status` isn't Tailscale stopping (LEPC, 2026-11-21: every Mac
+        // showed as offline for 10 s in the middle of a session). Keep what we had for one round.
+        {
+            let mut s = self.state.lock().unwrap();
+            if !running && s.tailscale_running && !s.tailscale_missed {
+                s.tailscale_missed = true;
+                return;
+            }
+            s.tailscale_missed = false;
+        }
         let candidates: Vec<tailscale::Peer> =
             peers.clone().unwrap_or_default().into_iter().filter(|p| p.online && (p.os == "macOS" || p.os == "windows" || p.os == "linux") && p.mine).collect();
         // Check them all at once: each is a TCP connect that may take a second to fail.
@@ -201,8 +213,9 @@ impl Directory {
             "tailscale {} · Macs on this account: {} · bb1 answering: {} · home addresses via Tailscale: {}",
             if running { "running" } else { "not running" },
             candidates.iter().map(|p| format!("{} {}{}", p.name, p.ip, p.direct.as_ref().map(|d| format!(" (direct {d})")).unwrap_or_default())).collect::<Vec<_>>().join(", "),
-            answering.iter().cloned().collect::<Vec<_>>().join(", "),
-            lan_via_tailscale.iter().map(|(t, l)| format!("{t} → {l}")).collect::<Vec<_>>().join(", "),
+            // Sorted: in set order, the same answer read differently each time and was logged every 7 s.
+            sorted(answering.iter().cloned()).join(", "),
+            sorted(lan_via_tailscale.iter().map(|(t, l)| format!("{t} → {l}"))).join(", "),
         );
         if summary != s.last_summary {
             logi!("directory: {summary}");
@@ -429,4 +442,10 @@ pub fn ago(at: SystemTime) -> String {
             format!("{d} day{} ago", if d == 1 { "" } else { "s" })
         }
     }
+}
+
+fn sorted(items: impl Iterator<Item = String>) -> Vec<String> {
+    let mut v: Vec<String> = items.collect();
+    v.sort();
+    v
 }

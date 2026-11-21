@@ -2,6 +2,8 @@
 //! Packets are stored by sequence number, so late and duplicate copies land in the right place.
 //! Playback starts once `target` packets are queued. Running dry raises the target (up to 150 ms);
 //! 15 s without trouble lowers it again (down to 30 ms). Too much queued: skip ahead.
+//! A lost packet is filled with the one before it played backwards and fading out (it joins that one
+//! without a jump), and the packet after fades in over 1 ms: a gap is a soft dip, not a click.
 
 use crate::core::crypto::AUDIO_FRAMES_PER_PACKET as FRAMES;
 use crate::core::now_us;
@@ -10,6 +12,8 @@ use std::sync::Mutex;
 const SLOTS: usize = 64;
 const MIN_TARGET: usize = 6;
 const MAX_TARGET: usize = 30;
+/// Frames the packet after a filled-in gap takes to fade in (1 ms).
+const FADE_IN: usize = 48;
 
 struct Inner {
     samples: Vec<i16>, // SLOTS * FRAMES * 2, interleaved stereo
@@ -24,6 +28,11 @@ struct Inner {
     dry_pending: bool,
     concealed: u64,
     underruns: u64,
+    /// The last packet played from real sound, and whether it was the one just before the play head.
+    last_pcm: Vec<i16>,
+    last_good: bool,
+    /// The play head is on the first packet after a filled-in gap.
+    fade_in: bool,
 }
 
 pub struct JitterBuffer {
@@ -46,6 +55,9 @@ impl Default for JitterBuffer {
                 dry_pending: false,
                 concealed: 0,
                 underruns: 0,
+                last_pcm: vec![0; FRAMES * 2],
+                last_good: false,
+                fade_in: false,
             }),
         }
     }
@@ -73,6 +85,8 @@ impl Inner {
         self.play_offset = 0;
         self.buffering = true;
         self.dry_pending = false;
+        self.last_good = false;
+        self.fade_in = false;
     }
 }
 
@@ -156,18 +170,46 @@ impl JitterBuffer {
                 break;
             }
             let n = (frames - i).min(FRAMES - s.play_offset);
+            let off = s.play_offset;
             if have {
-                let base = (slot * FRAMES + s.play_offset) * 2;
+                let base = (slot * FRAMES + off) * 2;
                 out[i * 2..(i + n) * 2].copy_from_slice(&s.samples[base..base + n * 2]);
+                if s.fade_in {
+                    for j in 0..n.min(FADE_IN.saturating_sub(off)) {
+                        let g = (off + j) as f32 / FADE_IN as f32;
+                        for c in 0..2 {
+                            let k = (i + j) * 2 + c;
+                            out[k] = (out[k] as f32 * g) as i16;
+                        }
+                    }
+                }
             } else {
-                out[i * 2..(i + n) * 2].fill(0); // lost packet: brief silence
-                if s.play_offset == 0 {
+                // Lost: the packet before, backwards and fading to nothing (silence if that one was lost too).
+                if s.last_good {
+                    for j in 0..n {
+                        let pos = off + j;
+                        let g = 1.0 - (pos + 1) as f32 / FRAMES as f32;
+                        for c in 0..2 {
+                            out[(i + j) * 2 + c] = (s.last_pcm[(FRAMES - 1 - pos) * 2 + c] as f32 * g) as i16;
+                        }
+                    }
+                } else {
+                    out[i * 2..(i + n) * 2].fill(0);
+                }
+                if off == 0 {
                     s.concealed += 1;
                 }
             }
             i += n;
             s.play_offset += n;
             if s.play_offset == FRAMES {
+                if have {
+                    let base = slot * FRAMES * 2;
+                    let Inner { samples, last_pcm, .. } = &mut *s;
+                    last_pcm.copy_from_slice(&samples[base..base + FRAMES * 2]);
+                }
+                s.last_good = have;
+                s.fade_in = !have;
                 s.invalidate(p);
                 s.play_seq = Some(p.wrapping_add(1));
                 s.play_offset = 0;
@@ -210,5 +252,24 @@ mod tests {
         assert!(out.iter().all(|&s| s == 0)); // seq 0
         b.read(&mut out);
         assert!(out.iter().all(|&s| s == 1));
+    }
+
+    #[test]
+    fn a_lost_packet_fades_out_instead_of_cutting_to_silence() {
+        let b = JitterBuffer::default();
+        for seq in (0..14u32).filter(|&s| s != 1) {
+            let pcm: Vec<u8> = (0..FRAMES).flat_map(|f| [(f as i16 * 10).to_le_bytes(), (f as i16 * 10).to_le_bytes()]).flatten().collect();
+            b.write(seq, &pcm);
+        }
+        let mut out = vec![0i16; FRAMES * 2];
+        b.read(&mut out); // seq 0: 0, 10, … 2390
+        assert_eq!(out[(FRAMES - 1) * 2], 2390);
+        b.read(&mut out); // seq 1 is missing
+        assert!(out[0] > 2300, "starts where seq 0 ended, got {}", out[0]);
+        assert_eq!(out[(FRAMES - 1) * 2], 0, "and fades to nothing");
+        b.read(&mut out); // seq 2 fades in
+        assert_eq!(out[0], 0);
+        assert_eq!(out[(FRAMES - 1) * 2], 2390);
+        assert_eq!(b.take_stats().0, 1);
     }
 }

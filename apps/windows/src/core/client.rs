@@ -990,8 +990,10 @@ impl Session {
     fn watchdog(&mut self) -> Option<End> {
         let now = now_us();
         let rtt = self.shared.rtt_us.load(Relaxed);
-        if now - self.last_pong_us > 2_000_000 {
-            return Some(End::Closed("no heartbeat from the Mac for 2 s".into()));
+        // 4 s: a far-away viewer's line can stall for 2-3 s and come back (LEPC, 2026-11-21: the host
+        // kept getting its pings, late, while this gave up at 2 s and reconnected). The host waits 5 s.
+        if now - self.last_pong_us > 4_000_000 {
+            return Some(End::Closed("no heartbeat from the host for 4 s".into()));
         }
         if now - self.last_path_check_us > 15_000_000 {
             self.last_path_check_us = now;

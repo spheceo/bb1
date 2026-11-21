@@ -62,7 +62,7 @@ When the screen is changing (for example, input just arrived on the host), the f
 | 1 | Client missing packets for a frame | `RECOVER` → host sends keyframe | < 50 ms |
 | 2 | Client `decoded` or `displayed` stalls while `received` keeps going | Client resets its decoder (or display layer), asks for a keyframe | < 200 ms |
 | 3 | Host `captured` or `encoded` stalls while the screen is changing (input arrived, no frame within ~300 ms), or encoder error | Host rebuilds the encoder (new `stream_epoch`), then the capture stream if needed | < 500 ms |
-| 4 | No heartbeat for 2 s, **or** video still stalled 2 s after steps 1–3 | Client reconnects the transport, same pairing, no user action | < 1 s on LAN |
+| 4 | No heartbeat for 2 s (4 s on the Windows/Linux client, whose host waits 5 s: far-away lines stall for 2–3 s and come back), **or** video still stalled 2 s after steps 1–3 | Client reconnects the transport, same pairing, no user action | < 1 s on LAN |
 | 5 | Still broken after 3 reconnects | Client shows a clear message with the last error; host restarts its pipeline | — |
 
 The user should only ever see steps 4–5 as a brief "Reconnecting…" badge.

@@ -129,10 +129,40 @@ pub fn is_tailscale_ip(address: &str) -> bool {
 
 /// "direct", "relayed via jnb", or None if it isn't a Tailscale peer.
 pub fn path_description(ip: &str) -> Option<String> {
+    path(ip).map(|(description, _)| description)
+}
+
+/// The path's description, and whether it's direct to a home-network address (the same house, not
+/// across the internet).
+pub fn path(ip: &str) -> Option<(String, bool)> {
     let peer = peers()?.into_iter().find(|p| p.ip == ip)?;
-    Some(if peer.direct.is_some() {
-        "direct".into()
-    } else {
-        format!("relayed{}", peer.relay.map(|r| format!(" via {r}")).unwrap_or_default())
+    Some(match peer.direct {
+        Some(d) => ("direct".into(), endpoint_is_private(&d)),
+        None => (format!("relayed{}", peer.relay.map(|r| format!(" via {r}")).unwrap_or_default()), false),
     })
+}
+
+/// "192.168.3.77:41641" or "[fd00::1]:41641": a private (home-network) address?
+fn endpoint_is_private(endpoint: &str) -> bool {
+    let host = endpoint.rsplit_once(':').map_or(endpoint, |(h, _)| h).trim_matches(['[', ']']);
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(a)) => a.is_private() || a.is_link_local(),
+        Ok(std::net::IpAddr::V6(a)) => (a.segments()[0] & 0xfe00) == 0xfc00 || (a.segments()[0] & 0xffc0) == 0xfe80,
+        Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn home_endpoints() {
+        assert!(endpoint_is_private("192.168.3.77:41641"));
+        assert!(endpoint_is_private("10.0.0.5:41641"));
+        assert!(endpoint_is_private("[fd00::1]:41641"));
+        assert!(!endpoint_is_private("105.225.113.113:41641"));
+        assert!(!endpoint_is_private("[2c0f:f4c0::1]:41641"));
+        assert!(!endpoint_is_private("derp"));
+    }
 }

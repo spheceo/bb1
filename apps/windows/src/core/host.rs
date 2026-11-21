@@ -243,6 +243,8 @@ struct Session {
     audio: AtomicBool,
     audio_seq: AtomicU32,
     recent_audio: Mutex<VecDeque<Vec<u8>>>,
+    /// Silent sound packets in a row (only the first ones of a pause are sent).
+    silent_run: AtomicU32,
     ended: AtomicBool,
     mouse: AtomicBool,
     keyboard: AtomicBool,
@@ -277,10 +279,15 @@ struct DelayState {
     last_cut: Option<Instant>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct RateState {
     rate: f64,
     clean_seconds: u32,
+    /// This connection's usual share of packets lost (a slow average): line noise that doesn't go
+    /// away at a lower bitrate. Only loss well above it means we're sending too much.
+    loss_floor: f64,
+    /// Seconds that have gone into `loss_floor`.
+    loss_seconds: u32,
 }
 
 impl Session {
@@ -321,8 +328,8 @@ struct Shared {
     size: Mutex<(u32, u32)>,
     stopped: AtomicBool,
     own_login: Mutex<Option<(String, Instant)>>,
-    /// Each computer's last quality (share of full bitrate) when it left, by device ID.
-    last_rates: Mutex<HashMap<String, (f64, Instant)>>,
+    /// Each computer's last quality (share of full bitrate, and its line's usual loss) when it left, by device ID.
+    last_rates: Mutex<HashMap<String, (RateState, Instant)>>,
     /// Announces this host on the home network (Bonjour), like the Mac host.
     bonjour: Option<mdns_sd::ServiceDaemon>,
     /// Who may sign in (changeable while sharing).
@@ -392,8 +399,10 @@ impl Host {
     }
 
     /// 5 ms of sound (960 bytes: 240 frames, stereo, i16). Sent to viewers that asked for sound.
-    /// Digital silence isn't sent (the client plays silence when nothing arrives), but it's counted, so
-    /// the client can tell a pause from a lost packet.
+    /// A pause (more than 100 ms of digital silence) isn't sent: the client plays silence when nothing
+    /// arrives. Its packets are still counted, so the client can tell a pause from a lost packet.
+    /// Shorter silences are sent like sound, or the client takes each one for a lost packet (LEPC,
+    /// 2026-11-21: "12 gaps a second" in quiet games that were only these).
     pub fn audio_chunk(&self, pcm: &[u8], capture_us: u64) {
         let silent = pcm.chunks_exact(2).all(|c| i16::from_le_bytes([c[0], c[1]]).unsigned_abs() <= 2);
         let sessions = self.shared.sessions.lock().unwrap().clone();
@@ -404,15 +413,18 @@ impl Host {
             let Some(peer) = *s.udp_peer.lock().unwrap() else { continue };
             let seq = s.audio_seq.fetch_add(1, Relaxed).wrapping_add(1);
             let mut recent = s.recent_audio.lock().unwrap();
-            if silent {
+            if !silent {
+                s.silent_run.store(0, Relaxed);
+            } else if s.silent_run.fetch_add(1, Relaxed) >= SHORT_SILENCE_PACKETS {
                 recent.clear();
                 continue;
             }
             let packet = crypto::seal_audio(seq, capture_us, pcm, &s.keys.video);
             let _ = self.shared.udp.send_to(&packet, peer);
-            // Each packet goes out a second time two packets (10 ms) later: one lost packet isn't a gap.
+            // Each packet goes out a second time 4 packets (20 ms) later, so a lost packet isn't a gap.
+            // 10 ms wasn't enough on Wi-Fi: it loses packets in bursts, and both copies went together.
             recent.push_back(packet);
-            if recent.len() > 2 {
+            if recent.len() > AUDIO_COPY_DELAY_PACKETS {
                 if let Some(old) = recent.pop_front() {
                     let _ = self.shared.udp.send_to(&old, peer);
                 }
@@ -667,6 +679,11 @@ fn handshake(shared: &Arc<Shared>, stream: &mut TcpStream, connection_id: u64) -
     Ok(Authed { keys: crypto::session_keys(&shared_key, &secret, &t), hello, mode })
 }
 
+/// Silent sound packets (5 ms each) still sent at the start of a pause: 100 ms.
+const SHORT_SILENCE_PACKETS: u32 = 20;
+/// How many packets later each sound packet's second copy goes out (5 ms each).
+const AUDIO_COPY_DELAY_PACKETS: usize = 4;
+
 fn plain_ip(ip: IpAddr) -> IpAddr {
     match ip {
         IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(IpAddr::V6(v6)),
@@ -801,6 +818,13 @@ fn stream_session(shared: &Arc<Shared>, authed: Authed, writer: (TcpStream, Stre
     let (tx, rx) = bounded::<Arc<Vec<Vec<u8>>>>(6);
     let (w, h) = *shared.size.lock().unwrap();
     let bitrate = shared.cfg.bitrate_mbps.unwrap_or_else(|| default_bitrate_mbps(w, h));
+    let over_tailscale = reader.peer_addr().ok().is_some_and(|a| tailscale::is_tailscale_ip(&plain_ip(a.ip()).to_string()));
+    let remembered = remembered_rate(shared, &peer_id);
+    // A computer coming in over Tailscale may be across town: its whole first keyframe at full quality
+    // can back its line up for 15 s (LEPC, 2026-11-21: 1.5 s behind at 30 Mbps). Start it at half and
+    // climb; one that turns out to be on the home network goes to full once its path is known.
+    let start = remembered.unwrap_or(RateState { rate: if over_tailscale { 0.5 } else { 1.0 }, ..Default::default() });
+    let start_rate = start.rate;
     let s = Arc::new(Session {
         id,
         name: hello.name.clone(),
@@ -814,6 +838,7 @@ fn stream_session(shared: &Arc<Shared>, authed: Authed, writer: (TcpStream, Stre
         audio: AtomicBool::new(false),
         audio_seq: AtomicU32::new(0),
         recent_audio: Mutex::new(VecDeque::new()),
+        silent_run: AtomicU32::new(0),
         ended: AtomicBool::new(false),
         mouse: AtomicBool::new(true),
         keyboard: AtomicBool::new(true),
@@ -824,12 +849,12 @@ fn stream_session(shared: &Arc<Shared>, authed: Authed, writer: (TcpStream, Stre
                              keys: AtomicU64::new(0), mouse: AtomicU64::new(0), pads: AtomicU64::new(0), pads_blocked: AtomicU64::new(0), rumble: AtomicU64::new(0) },
         // A computer that just reconnected starts where its last connection left off (for a minute):
         // starting it at full quality in the middle of the congestion that dropped it made things worse.
-        rate: Mutex::new(RateState { rate: remembered_rate(shared, &peer_id), clean_seconds: 0 }),
+        rate: Mutex::new(start),
         pps: AtomicU64::new(0),
         resend_tokens: Mutex::new((60.0, Instant::now())),
         resends_skipped: AtomicU64::new(0),
         delay: Mutex::new(DelayState::default()),
-        pace: AtomicU64::new(pace_for(bitrate as f64)),
+        pace: AtomicU64::new(pace_for((bitrate as f64 * start_rate).max(3.0))),
         baseline: Mutex::new((0, 0, 0, 0)),
         epoch: AtomicU32::new(1),
     });
@@ -854,11 +879,14 @@ fn stream_session(shared: &Arc<Shared>, authed: Authed, writer: (TcpStream, Stre
         let s2 = s.clone();
         let sh = shared.clone();
         spawn("bb1 path", move || {
-            if let Some(path) = tailscale::path_description(&ip) {
+            if let Some((path, home)) = tailscale::path(&ip) {
                 logi!("host: {} is connected via Tailscale, {path}", s2.name);
                 // A relay drops whatever doesn't fit its short queue: start gently.
                 if path.starts_with("relayed") {
                     set_rate(&sh, &s2, 0.4, "Tailscale relay");
+                } else if home && remembered.is_none() && s2.rate.lock().unwrap().rate == start_rate && start_rate < 1.0 {
+                    // Not if the bitrate has already had to come down.
+                    set_rate(&sh, &s2, 1.0, "on the home network");
                 }
             }
         });
@@ -984,8 +1012,8 @@ fn end_session(shared: &Shared, s: &Arc<Session>, reason: &str, bye: Option<&str
     }
     logi!("host: session {} with {} ended: {reason}", s.id, s.name);
     if !s.peer_id.is_empty() {
-        let rate = s.rate.lock().unwrap().rate;
-        shared.last_rates.lock().unwrap().insert(s.peer_id.clone(), (rate, Instant::now()));
+        let r = *s.rate.lock().unwrap();
+        shared.last_rates.lock().unwrap().insert(s.peer_id.clone(), (r, Instant::now()));
     }
     if let Some(bye) = bye {
         s.send(&Msg::Bye(v(bye.to_string())));
@@ -1292,20 +1320,27 @@ fn sender(shared: Arc<Shared>, s: Arc<Session>, frames: Receiver<Arc<Vec<Vec<u8>
     }
 }
 
-/// The quality a computer had when it last left, if that was under a minute ago.
-fn remembered_rate(shared: &Shared, peer_id: &str) -> f64 {
+/// How a computer's last connection went, if it left in the last day: the quality it had (exactly,
+/// if it was under a minute ago: that's a reconnect in the middle of whatever dropped it), and its
+/// line's usual loss, so the bitrate doesn't have to learn that again.
+fn remembered_rate(shared: &Shared, peer_id: &str) -> Option<RateState> {
     if peer_id.is_empty() {
-        return 1.0;
+        return None;
     }
-    match shared.last_rates.lock().unwrap().get(peer_id) {
-        Some((rate, at)) if at.elapsed() < Duration::from_secs(60) => {
-            if *rate < 1.0 {
-                logi!("host: starting this computer at {:.0}% of full quality, where its last connection left off", rate * 100.0);
-            }
-            *rate
-        }
-        _ => 1.0,
+    let (mut r, at) = *shared.last_rates.lock().unwrap().get(peer_id)?;
+    if at.elapsed() >= Duration::from_secs(24 * 3600) {
+        return None;
     }
+    // From longer ago, not below 30%: a connection's last moments are often its worst.
+    if at.elapsed() >= Duration::from_secs(60) {
+        r.rate = r.rate.max(0.3);
+    }
+    r.clean_seconds = 0;
+    if r.rate < 1.0 {
+        logi!("host: starting this computer at {:.0}% of full quality, where its last connection left off (it usually loses {:.1}% of packets)",
+              r.rate * 100.0, r.loss_floor * 100.0);
+    }
+    Some(r)
 }
 
 /// Resend packets the viewer says it didn't get, within a budget. On a connection that's suddenly
@@ -1352,8 +1387,9 @@ fn watchdog(shared: Arc<Shared>) {
         tick += 1;
         let sessions = shared.sessions.lock().unwrap().clone();
         for s in &sessions {
-            if now_us().saturating_sub(s.last_ping_us.load(Relaxed)) > 3_000_000 {
-                end_session(&shared, s, "no heartbeat from the client for 3 s", None);
+            // Longer than the client waits (4 s), so it's the one that decides to reconnect.
+            if now_us().saturating_sub(s.last_ping_us.load(Relaxed)) > 5_000_000 {
+                end_session(&shared, s, "no heartbeat from the client for 5 s", None);
             }
             // Frames older than 2 s can't usefully be resent (long enough for a far-away viewer).
             let now = now_us();
@@ -1399,34 +1435,66 @@ fn log_stats(shared: &Shared, sessions: &[Arc<Session>]) {
           if count > 0 { total as f64 / count as f64 / 1000.0 } else { 0.0 }, max as f64 / 1000.0, lines.join(" · "));
 }
 
-/// Lost packets mean we're sending more than this viewer's path carries: back off fast, then creep
-/// back up while nothing is lost. Only this viewer's encoder changes.
+/// Lost packets can mean we're sending more than this viewer's path carries: back off fast, then
+/// creep back up while nothing extra is lost. Only this viewer's encoder changes.
 fn adapt_rate(shared: &Shared, s: &Arc<Session>, packets: u64, resent: u64) {
     let mut r = *s.rate.lock().unwrap();
     let old = r.rate;
-    // Back off only on heavy loss: at least 5% of the second's packets, and at least 12 of them. A
-    // friend in another city (2026-11-05) had a steady ~2% that the viewer recovered every time and that
-    // didn't shrink at a lower bitrate: line noise, not congestion. Backing off for it kept him at a sixth
-    // of full quality, and a game starting then took ~20 s to look sharp again.
-    if resent >= 12 && resent * 20 >= packets {
+    // Not clean while the viewer's line was backing up in the last 3 s.
+    let backing_up = s.delay.lock().unwrap().last_cut.is_some_and(|t| t.elapsed() < Duration::from_secs(3));
+    let loss = rate_step(&mut r, packets, resent, backing_up);
+    {
+        let mut cur = s.rate.lock().unwrap();
+        cur.clean_seconds = r.clean_seconds;
+        cur.loss_floor = r.loss_floor;
+        cur.loss_seconds = r.loss_seconds;
+    }
+    if r.rate != old {
+        set_rate(shared, s, r.rate, &if r.rate < old {
+            format!("{resent} packets resent, {:.0}% (usually {:.0}%)", loss * 100.0, r.loss_floor * 100.0)
+        } else {
+            "no loss".into()
+        });
+    }
+}
+
+/// One second of a viewer's bitrate: its packets and the ones it asked again for. Returns the loss.
+fn rate_step(r: &mut RateState, packets: u64, resent: u64, backing_up: bool) -> f64 {
+    let loss = if packets > 0 { resent as f64 / packets as f64 } else { 0.0 };
+    // Back off only on loss well above this line's usual. Some lines lose packets whatever we send:
+    // a friend in another city (2026-11-05) had a steady ~2%, LEPC (2026-11-21) ~7% at every bitrate
+    // from 2 to 12 Mbps. Backing off for that kept LEPC at 4-6 Mbps of 30 for an hour (63% of its
+    // seconds had a cut; 10% with this), and cost picture without saving a single packet.
+    let threshold = loss_threshold(r.loss_floor);
+    let too_much = resent >= 12 && loss >= threshold;
+    if too_much {
         r.rate = (r.rate * 0.7).max(0.15);
         r.clean_seconds = 0;
     } else {
-        // Not clean while the viewer's line was backing up in the last 3 s.
-        let backing_up = s.delay.lock().unwrap().last_cut.is_some_and(|t| t.elapsed() < Duration::from_secs(3));
         r.clean_seconds = if backing_up { 0 } else { r.clean_seconds + 1 };
         // Climb back sooner: after 2 clean seconds, a quarter more each clean second.
         if r.clean_seconds >= 2 && r.rate < 1.0 {
             r.rate = (r.rate * 1.25).min(1.0);
         }
     }
-    s.rate.lock().unwrap().clean_seconds = r.clean_seconds;
-    if r.rate != old {
-        set_rate(shared, s, r.rate, &if r.rate < old { format!("{resent} packets resent") } else { "no loss".into() });
+    // Learn the usual loss (over ~20 s) from seconds with enough packets to tell, leaving out the ones
+    // that were too much, so congestion can't teach it to ignore congestion. Never above 12% (a 21%
+    // threshold): past that, a line is too broken to call it normal.
+    if packets >= 100 && !too_much {
+        r.loss_seconds += 1;
+        let k = 1.0 / (r.loss_seconds + 4).min(20) as f64;
+        r.loss_floor += (loss.min(0.12) - r.loss_floor) * k;
     }
+    loss
 }
 
-/// The viewer's round trip, four times a second. When it climbs well above this connection's normal
+/// The share of a second's packets lost that means "too much": half again this line's usual loss
+/// plus 3 points, and never under 5%. (LEPC's 7% → 13%; a clean line's 0% → 5%.)
+fn loss_threshold(floor: f64) -> f64 {
+    (floor * 1.5 + 0.03).max(0.05)
+}
+
+/// The viewer's round trip, four times a second. When it stays well above this connection's normal
 /// (the lowest in the last 30 s), the viewer's line is queuing up: lower the bitrate now, before
 /// frames arrive late and the picture freezes. Loss only shows up after the queue is full.
 fn note_rtt(shared: &Shared, s: &Arc<Session>, rtt: f64) {
@@ -1446,7 +1514,10 @@ fn note_rtt(shared: &Shared, s: &Arc<Session>, rtt: f64) {
         } else {
             d.high = 0;
         }
-        if d.high >= 2 && d.last_cut.is_none_or(|t| t.elapsed() >= Duration::from_secs(1)) {
+        // For a full second (4 pings in a row). A Wi-Fi hiccup is a short spike, however high: on LEPC
+        // (2026-11-21) 148 of 177 cuts were one spike with a normal round trip right after, and a lower
+        // bitrate doesn't help with those. A queue we're filling stays up until we send less.
+        if d.high >= 4 && d.last_cut.is_none_or(|t| t.elapsed() >= Duration::from_secs(1)) {
             d.last_cut = Some(now);
             Some((queued > threshold * 4.0, normal, rtt))
         } else {
@@ -1455,10 +1526,14 @@ fn note_rtt(shared: &Shared, s: &Arc<Session>, rtt: f64) {
     };
     if let Some((severe, normal, rtt)) = cut {
         let mut r = *s.rate.lock().unwrap();
+        let old = r.rate;
         r.rate = (r.rate * if severe { 0.5 } else { 0.75 }).max(0.15);
         r.clean_seconds = 0;
         *s.rate.lock().unwrap() = r;
-        set_rate(shared, s, r.rate, &format!("round trip {rtt:.0} ms, usually {normal:.0}: the line is backing up"));
+        // Already at the lowest: nothing changes, so nothing to say (it doesn't climb for 3 s either way).
+        if r.rate != old {
+            set_rate(shared, s, r.rate, &format!("round trip {rtt:.0} ms, usually {normal:.0}: the line is backing up"));
+        }
     }
 }
 
@@ -1475,6 +1550,35 @@ fn set_rate(shared: &Shared, s: &Arc<Session>, rate: f64, why: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A line that loses ~7% whatever we send (LEPC's) settles near full quality; one where we're
+    /// sending too much (a third lost) still comes down to the lowest.
+    #[test]
+    fn line_noise_isnt_congestion() {
+        let mut r = RateState { rate: 1.0, ..Default::default() };
+        let mut cuts = 0;
+        for i in 0..120u64 {
+            let packets = (3000.0 * r.rate) as u64;
+            let resent = packets * (5 + i % 5) / 100; // 5-9%
+            let before = r.rate;
+            rate_step(&mut r, packets, resent, false);
+            // (The first seconds cut while it learns what's usual.)
+            cuts += (i >= 20 && r.rate < before) as u32;
+        }
+        assert!(cuts <= 2, "{cuts} cuts on line noise after learning it");
+        assert!(r.rate >= 0.8, "rate {}", r.rate);
+        assert!((0.05..0.09).contains(&r.loss_floor), "floor {}", r.loss_floor);
+
+        // Then we send too much: a third lost, for a while. It comes down, and stays down.
+        for _ in 0..60 {
+            let packets = (3000.0 * r.rate) as u64;
+            rate_step(&mut r, packets, packets / 3, false);
+        }
+        assert!(r.rate <= 0.16, "rate {}", r.rate);
+        assert!(r.loss_floor < 0.09, "congestion taught it {}", r.loss_floor);
+        // A clean line keeps the old 5%.
+        assert_eq!(loss_threshold(0.0), 0.05);
+    }
 
     #[test]
     fn bitrate_by_resolution() {
