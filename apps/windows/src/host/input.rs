@@ -25,12 +25,15 @@
 //!
 //! Game controllers: each viewer's pads become virtual Xbox 360 controllers through the ViGEmBus
 //! driver (`Gamepads`), so every friend is a separate player; games' rumble goes back to that
-//! viewer. Without the driver (Settings offers to install it) controllers are ignored.
+//! viewer. Without the driver (Settings offers to install it) controllers are ignored. When a
+//! viewer's connection drops, its controllers stay plugged in (centred, nothing pressed) for 30 s:
+//! if that device reconnects in time they're its again, so the game never sees them go.
 
 use crate::core::gamepad::{self, MAX_PADS};
 use crate::core::proto::{GamepadMsg, KeyMsg, MouseButtonMsg, MouseMoveMsg, RumbleMsg, ScrollMsg};
 use crate::logi;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::POINT;
@@ -327,7 +330,12 @@ struct Pad {
     target: vigem_client::Xbox360Wired<Arc<vigem_client::Client>>,
     /// The last report it took (None: none yet).
     last: Option<gamepad::XReport>,
+    /// The viewer it belongs to now (it changes when a reconnected viewer gets it back): where rumble goes.
+    owner: Arc<AtomicU32>,
 }
+
+/// How long a dropped viewer's controllers wait for it to reconnect (LEPC's reconnects took up to 22 s).
+const KEEP_FOR_RECONNECT: Duration = Duration::from_secs(30);
 
 /// Every viewer's virtual controllers. Connects to ViGEmBus when the first controller arrives (and
 /// again every few seconds while it isn't there, so installing the driver works without restarting).
@@ -337,6 +345,8 @@ pub struct Gamepads {
     bus_tried: Option<Instant>,
     missing_logged: bool,
     pads: HashMap<(u32, i64), Pad>,
+    /// A dropped viewer's controllers, by device ID, waiting for it to reconnect (and since when).
+    kept: HashMap<String, (Vec<(i64, Pad)>, Instant)>,
     sink: Option<RumbleSink>,
 }
 
@@ -346,7 +356,8 @@ pub static VIRTUAL_PADS: std::sync::atomic::AtomicUsize = std::sync::atomic::Ato
 
 impl Gamepads {
     fn count_changed(&self) {
-        VIRTUAL_PADS.store(self.pads.len(), std::sync::atomic::Ordering::Relaxed);
+        let kept: usize = self.kept.values().map(|(p, _)| p.len()).sum();
+        VIRTUAL_PADS.store(self.pads.len() + kept, Ordering::Relaxed);
     }
 
     pub fn set_rumble_sink(&mut self, sink: RumbleSink) {
@@ -412,13 +423,55 @@ impl Gamepads {
         }
     }
 
-    /// Unplug this viewer's controllers.
-    pub fn viewer_left(&mut self, viewer: u32) {
-        let before = self.pads.len();
-        self.pads.retain(|(v, _), _| *v != viewer);
+    /// The viewer left. `returning_device`: its connection broke, so keep its controllers plugged in,
+    /// centred, for that device to take back. Otherwise unplug them.
+    pub fn viewer_left(&mut self, viewer: u32, returning_device: Option<&str>) {
+        let keys: Vec<(u32, i64)> = self.pads.keys().filter(|(v, _)| *v == viewer).copied().collect();
+        if keys.is_empty() {
+            return;
+        }
+        let mut pads: Vec<(i64, Pad)> = keys.into_iter().filter_map(|k| self.pads.remove(&k).map(|p| (k.1, p))).collect();
+        match returning_device {
+            Some(device) => {
+                let neutral = gamepad::XReport::default();
+                for (_, pad) in &mut pads {
+                    if pad.target.update(&xgamepad(neutral)).is_ok() {
+                        pad.last = Some(neutral);
+                    }
+                }
+                logi!("controllers: keeping viewer {viewer}'s {} controller(s) plugged in for {} s, in case it reconnects",
+                      pads.len(), KEEP_FOR_RECONNECT.as_secs());
+                // (Anything still kept for that device from before is replaced, and unplugged.)
+                self.kept.insert(device.to_string(), (pads, Instant::now()));
+            }
+            None => logi!("controllers: unplugged viewer {viewer}'s {} controller(s)", pads.len()),
+        }
         self.count_changed();
-        if self.pads.len() != before {
-            logi!("controllers: unplugged viewer {viewer}'s {} controller(s)", before - self.pads.len());
+    }
+
+    /// A viewer arrived: its device's kept controllers (if any) are its again.
+    pub fn viewer_joined(&mut self, viewer: u32, device: &str) {
+        let Some((pads, since)) = self.kept.remove(device) else { return };
+        logi!("controllers: viewer {viewer} is back after {:.0} s: its {} controller(s) never left", since.elapsed().as_secs_f64(), pads.len());
+        for (n, pad) in pads {
+            pad.owner.store(viewer, Ordering::Relaxed);
+            self.pads.insert((viewer, n), pad);
+        }
+        self.count_changed();
+    }
+
+    /// Unplug controllers kept for a device that didn't come back in time.
+    pub fn expire(&mut self) {
+        let before = self.kept.len();
+        self.kept.retain(|_, (pads, since)| {
+            let keep = since.elapsed() < KEEP_FOR_RECONNECT;
+            if !keep {
+                logi!("controllers: unplugged {} controller(s) kept for a viewer that didn't come back", pads.len());
+            }
+            keep
+        });
+        if self.kept.len() != before {
+            self.count_changed();
         }
     }
 
@@ -470,7 +523,9 @@ fn plug(bus: Arc<vigem_client::Client>, viewer: u32, pad: i64, sink: Option<Rumb
         }
         std::thread::sleep(Duration::from_millis(5));
     }
+    let owner = Arc::new(AtomicU32::new(viewer));
     if let Some(sink) = sink {
+        let owner = owner.clone();
         match target.request_notification() {
             Ok(n) => {
                 // Games often set the same strengths every frame: only changes go to the viewer (it
@@ -480,14 +535,14 @@ fn plug(bus: Arc<vigem_client::Client>, viewer: u32, pad: i64, sink: Option<Rumb
                     let now = (n.large_motor, n.small_motor);
                     if now != last {
                         last = now;
-                        sink(viewer, RumbleMsg { pad, large: now.0 as i64, small: now.1 as i64 });
+                        sink(owner.load(Ordering::Relaxed), RumbleMsg { pad, large: now.0 as i64, small: now.1 as i64 });
                     }
                 });
             }
             Err(e) => logi!("controllers: no rumble for viewer {viewer}'s pad {pad}: {e:?}"),
         }
     }
-    Ok(Pad { target, last: None })
+    Ok(Pad { target, last: None, owner })
 }
 
 static DRIVER_CHECK: Mutex<Option<(Instant, bool)>> = Mutex::new(None);

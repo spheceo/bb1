@@ -91,8 +91,13 @@ pub trait InputBackend: Send + 'static {
     fn gamepad(&mut self, _viewer: u32, _g: &GamepadMsg) {}
     /// Let go of everything on this viewer's controllers (its access was turned off).
     fn release_gamepads(&mut self, _viewer: u32) {}
-    /// The viewer left: unplug its virtual controllers.
-    fn viewer_left(&mut self, _viewer: u32) {}
+    /// The viewer left: unplug its virtual controllers. With its device ID, it may be back in a moment
+    /// (its line dropped): keep them plugged in for a while, so the game doesn't lose its players.
+    fn viewer_left(&mut self, _viewer: u32, _returning_device: Option<&str>) {}
+    /// A viewer arrived: if it's a device whose controllers are being kept, they're its again.
+    fn viewer_joined(&mut self, _viewer: u32, _device: &str) {}
+    /// Once a second: controllers kept for a device that didn't come back get unplugged.
+    fn tick(&mut self) {}
     /// Where to send rumble for a viewer's controller (set once, at start).
     fn set_rumble_sink(&mut self, _sink: Box<dyn Fn(u32, RumbleMsg) + Send + Sync>) {}
 }
@@ -246,6 +251,8 @@ struct Session {
     /// Silent sound packets in a row (only the first ones of a pause are sent).
     silent_run: AtomicU32,
     ended: AtomicBool,
+    /// Out of the session list (end_session started): its input no longer counts.
+    left: AtomicBool,
     mouse: AtomicBool,
     keyboard: AtomicBool,
     controller: AtomicBool,
@@ -482,7 +489,7 @@ impl Host {
     /// Disconnect one viewer (it's told why, so it doesn't reconnect).
     pub fn disconnect(&self, id: u32) {
         let Some(s) = self.shared.sessions.lock().unwrap().iter().find(|s| s.id == id).cloned() else { return };
-        end_session(&self.shared, &s, "disconnected by the host", Some(&format!("{} disconnected you", self.shared.cfg.name)));
+        end_session(&self.shared, &s, "disconnected by the host", Some(&format!("{} disconnected you", self.shared.cfg.name)), false);
     }
 
     pub fn cancel_pairing(&self) {
@@ -493,7 +500,7 @@ impl Host {
     pub fn disconnect_all(&self, why: &str) {
         let sessions = self.shared.sessions.lock().unwrap().clone();
         for s in sessions {
-            end_session(&self.shared, &s, why, Some(why));
+            end_session(&self.shared, &s, why, Some(why), false);
         }
     }
 
@@ -804,7 +811,7 @@ fn stream_session(shared: &Arc<Shared>, authed: Authed, writer: (TcpStream, Stre
         .filter(|s| if peer_id.is_empty() { s.peer_id.is_empty() && s.name == hello.name } else { s.peer_id == peer_id })
         .cloned().collect();
     for old in stale {
-        end_session(shared, &old, &format!("{} reconnected", hello.name), Some(&format!("{} connected again", hello.name)));
+        end_session(shared, &old, &format!("{} reconnected", hello.name), Some(&format!("{} connected again", hello.name)), true);
     }
     let count = shared.sessions.lock().unwrap().len();
     if count >= MAX_VIEWERS {
@@ -840,6 +847,7 @@ fn stream_session(shared: &Arc<Shared>, authed: Authed, writer: (TcpStream, Stre
         recent_audio: Mutex::new(VecDeque::new()),
         silent_run: AtomicU32::new(0),
         ended: AtomicBool::new(false),
+        left: AtomicBool::new(false),
         mouse: AtomicBool::new(true),
         keyboard: AtomicBool::new(true),
         controller: AtomicBool::new(true),
@@ -860,6 +868,9 @@ fn stream_session(shared: &Arc<Shared>, authed: Authed, writer: (TcpStream, Stre
     });
     let others: Vec<String> = shared.sessions.lock().unwrap().iter().map(|s| s.name.clone()).collect();
     shared.sessions.lock().unwrap().push(s.clone());
+    if !peer_id.is_empty() {
+        shared.input.lock().unwrap().viewer_joined(id, &peer_id);
+    }
     logi!("host: {} connected (session {id}) from {peer}{}", s.name,
           if others.is_empty() { String::new() } else { format!("; also connected: {}", others.join(", ")) });
     s.send(&Msg::Welcome { host_name: shared.cfg.name.clone() });
@@ -911,6 +922,9 @@ fn stream_session(shared: &Arc<Shared>, authed: Authed, writer: (TcpStream, Stre
         if let Some(c) = counter {
             c.fetch_add(1, Relaxed);
         }
+        if s.left.load(Relaxed) {
+            break Err("the session had ended".into());
+        }
         match msg {
             Msg::Ping(p) => {
                 s.last_ping_us.store(now_us(), Relaxed);
@@ -936,7 +950,13 @@ fn stream_session(shared: &Arc<Shared>, authed: Authed, writer: (TcpStream, Stre
                     logi!("gamepad trace: {} pad {} {} buttons {:#06x} lt {} rt {} left {},{} right {},{}", s.name, g.pad,
                           if g.connected { "on" } else { "off" }, g.buttons, g.lt, g.rt, g.lx, g.ly, g.rx, g.ry);
                 }
-                shared.input.lock().unwrap().gamepad(s.id, &g.v)
+                // Not once the session has ended: a controller update still in flight from it plugged a
+                // new virtual controller for a viewer that was gone, and nothing ever unplugged it (a
+                // ghost second player, PC 2026-11-21).
+                let mut input = shared.input.lock().unwrap();
+                if !s.left.load(Relaxed) {
+                    input.gamepad(s.id, &g.v);
+                }
             }
             // Anyone who may use the mouse or keyboard may pick the screen.
             Msg::SelectDisplay { id } if s.mouse.load(Relaxed) || s.keyboard.load(Relaxed) => {
@@ -960,7 +980,10 @@ fn stream_session(shared: &Arc<Shared>, authed: Authed, writer: (TcpStream, Stre
             _ => {}
         }
     };
-    end_session(shared, &s, &result.err().unwrap_or_else(|| "client disconnected".into()), None);
+    // A client that said goodbye left on purpose; one whose connection broke will probably be back.
+    let why = result.err().unwrap_or_else(|| "client disconnected".into());
+    let on_purpose = why.starts_with("client said bye");
+    end_session(shared, &s, &why, None, !on_purpose);
     Ok(())
 }
 
@@ -1001,7 +1024,9 @@ fn remember_device(shared: &Shared, s: &Session, authed: &Authed, connection_id:
     logi!("host: paired with {} (via {}); it won't need to sign in again", s.name, authed.mode);
 }
 
-fn end_session(shared: &Shared, s: &Arc<Session>, reason: &str, bye: Option<&str>) {
+/// `may_return`: its connection broke (rather than anyone choosing to end it), so it'll probably
+/// reconnect: its controllers stay plugged in for a while.
+fn end_session(shared: &Shared, s: &Arc<Session>, reason: &str, bye: Option<&str>, may_return: bool) {
     {
         let mut list = shared.sessions.lock().unwrap();
         let before = list.len();
@@ -1010,6 +1035,7 @@ fn end_session(shared: &Shared, s: &Arc<Session>, reason: &str, bye: Option<&str
             return;
         }
     }
+    s.left.store(true, Relaxed);
     logi!("host: session {} with {} ended: {reason}", s.id, s.name);
     if !s.peer_id.is_empty() {
         let r = *s.rate.lock().unwrap();
@@ -1027,7 +1053,7 @@ fn end_session(shared: &Shared, s: &Arc<Session>, reason: &str, bye: Option<&str
     {
         let mut input = shared.input.lock().unwrap();
         input.release_all();
-        input.viewer_left(s.id);
+        input.viewer_left(s.id, (may_return && !s.peer_id.is_empty()).then_some(s.peer_id.as_str()));
     }
     shared.events.viewers_changed(&shared.sessions.lock().unwrap().iter().map(|s| s.name.clone()).collect::<Vec<_>>());
 }
@@ -1389,7 +1415,7 @@ fn watchdog(shared: Arc<Shared>) {
         for s in &sessions {
             // Longer than the client waits (4 s), so it's the one that decides to reconnect.
             if now_us().saturating_sub(s.last_ping_us.load(Relaxed)) > 5_000_000 {
-                end_session(&shared, s, "no heartbeat from the client for 5 s", None);
+                end_session(&shared, s, "no heartbeat from the client for 5 s", None, true);
             }
             // Frames older than 2 s can't usefully be resent (long enough for a far-away viewer).
             let now = now_us();
@@ -1397,6 +1423,9 @@ fn watchdog(shared: Arc<Shared>) {
         }
         if tick % 4 == 0 && !sessions.is_empty() {
             log_stats(&shared, &sessions);
+        }
+        if tick % 4 == 0 {
+            shared.input.lock().unwrap().tick();
         }
     }
 }

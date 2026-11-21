@@ -171,8 +171,14 @@ impl InputBackend for WindowsInput {
     fn release_gamepads(&mut self, viewer: u32) {
         self.0.gamepads.release(viewer);
     }
-    fn viewer_left(&mut self, viewer: u32) {
-        self.0.gamepads.viewer_left(viewer);
+    fn viewer_left(&mut self, viewer: u32, returning_device: Option<&str>) {
+        self.0.gamepads.viewer_left(viewer, returning_device);
+    }
+    fn viewer_joined(&mut self, viewer: u32, device: &str) {
+        self.0.gamepads.viewer_joined(viewer, device);
+    }
+    fn tick(&mut self) {
+        self.0.gamepads.expire();
     }
     fn set_rumble_sink(&mut self, sink: Box<dyn Fn(u32, RumbleMsg) + Send + Sync>) {
         self.0.gamepads.set_rumble_sink(sink.into());

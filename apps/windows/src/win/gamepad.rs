@@ -74,6 +74,8 @@ type Gamepad = *mut c_void;
 struct Sdl {
     SDL_SetHint: unsafe extern "C" fn(*const c_char, *const c_char) -> bool,
     SDL_Init: unsafe extern "C" fn(u32) -> bool,
+    SDL_InitSubSystem: unsafe extern "C" fn(u32) -> bool,
+    SDL_QuitSubSystem: unsafe extern "C" fn(u32),
     SDL_GetError: unsafe extern "C" fn() -> *const c_char,
     SDL_PollEvent: unsafe extern "C" fn(*mut SdlEvent) -> bool,
     SDL_GetGamepads: unsafe extern "C" fn(*mut c_int) -> *mut u32,
@@ -105,6 +107,8 @@ impl Sdl {
         Ok(Sdl {
             SDL_SetHint: sym!(SDL_SetHint),
             SDL_Init: sym!(SDL_Init),
+            SDL_InitSubSystem: sym!(SDL_InitSubSystem),
+            SDL_QuitSubSystem: sym!(SDL_QuitSubSystem),
             SDL_GetError: sym!(SDL_GetError),
             SDL_PollEvent: sym!(SDL_PollEvent),
             SDL_GetGamepads: sym!(SDL_GetGamepads),
@@ -195,6 +199,12 @@ fn run() {
     let mut slots = Slots::default();
     let mut session = 0u64;
     let mut scanned_at: Option<Instant> = None;
+    // A controller SDL listed but couldn't open (LEPC 2026-11-21: "HIDAPI device disconnected while
+    // opening", then SDL never listed that PS4 controller again and the friend had none for the rest
+    // of the evening): if none opens in 3 s, start SDL's controller support again so it looks afresh.
+    let mut restart_at: Option<Instant> = None;
+    let mut restarted_at: Option<Instant> = None;
+    let mut listed = usize::MAX;
     loop {
         // Copied out first so the lock is let go at once: matching on the guard itself would hold it
         // through the 100 ms sleep below, and this loop takes it again straight after, so the UI
@@ -212,6 +222,12 @@ fn run() {
                 }
                 slots = Slots::default();
                 scanned_at = None;
+                restart_at = None;
+                listed = usize::MAX;
+                // Keep SDL's view of what's plugged in up to date between streams (unpumped for a minute,
+                // its idea of a controller could be stale by the next stream).
+                let mut ev = SdlEvent { kind: 0, _rest: [0; 124] };
+                while unsafe { (sdl.SDL_PollEvent)(&mut ev) } {}
                 std::thread::sleep(Duration::from_millis(100));
                 continue;
             }
@@ -235,9 +251,30 @@ fn run() {
             }
         }
 
+        if restart_at.is_some_and(|t| Instant::now() >= t) && open.is_empty() && restarted_at.is_none_or(|t| t.elapsed() > Duration::from_secs(30)) {
+            logi!("controllers: starting SDL's controller support again, to find the one it couldn't open");
+            restart_at = None;
+            restarted_at = Some(Instant::now());
+            slots = Slots::default();
+            unsafe {
+                (sdl.SDL_QuitSubSystem)(SDL_INIT_GAMEPAD);
+                if !(sdl.SDL_InitSubSystem)(SDL_INIT_GAMEPAD) {
+                    logi!("controllers: SDL couldn't start again ({})", sdl.error());
+                }
+            }
+            rescan = true;
+        }
+
         if rescan {
             scanned_at = Some(Instant::now());
             let ids = sdl.gamepads();
+            if ids.len() != listed {
+                // Logged when it changes, so a log shows whether the controller was there at all.
+                if ids.is_empty() && listed != usize::MAX {
+                    logi!("controllers: none connected to this PC now");
+                }
+                listed = ids.len();
+            }
             open.retain(|o| {
                 if ids.contains(&o.id) {
                     return true;
@@ -259,8 +296,10 @@ fn run() {
                 if handle.is_null() {
                     slots.release(id);
                     logi!("controllers: couldn't open a controller ({})", sdl.error());
+                    restart_at.get_or_insert(Instant::now() + Duration::from_secs(3));
                     continue;
                 }
+                restart_at = None;
                 let name = unsafe {
                     let n = (sdl.SDL_GetGamepadName)(handle);
                     if n.is_null() { "Controller".to_string() } else { CStr::from_ptr(n).to_string_lossy().into_owned() }
